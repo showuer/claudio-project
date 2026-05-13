@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+cache/tts/
+apps/server/.env
+*.tsbuildinfo
+.DS_Store

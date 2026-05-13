@@ -1,0 +1,15 @@
+{
+  "name": "claudio",
+  "private": true,
+  "description": "Claudio — Private AI Music Radio",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @claudio/server dev\" \"pnpm --filter @claudio/web dev\"",
+    "build": "pnpm --filter @claudio/server build && pnpm --filter @claudio/web build"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
