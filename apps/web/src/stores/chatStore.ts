@@ -17,6 +17,7 @@ interface ChatState {
   currentTtsWord: number;
 
   sendMessage: (text: string) => Promise<void>;
+  sendAidj: (text: string) => Promise<void>;
   loadHistory: () => Promise<void>;
   addMessage: (msg: Message) => void;
   setTtsWord: (i: number) => void;
@@ -81,7 +82,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
       }));
 
-      // Push playlist to player — handle both old format (play[]) and new format (songs[] + songIntros)
+      // Push playlist to player
       const songList = result.songs || result.play;
       if (songList && songList.length > 0) {
         const { usePlayerStore } = await import('./playerStore');
@@ -95,12 +96,73 @@ export const useChatStore = create<ChatState>((set, get) => ({
             duration_ms: 240000,
           }))
         );
-        if (!ttsUrl) ps.playTrack(0);
+        if (ttsUrl) {
+          ps.playNarrationThenMusic(ttsUrl, 0);
+        } else {
+          ps.playTrack(0);
+        }
       }
     } catch (err: any) {
       set((s) => ({
         messages: s.messages.map((m) =>
           m.id === djMsg.id ? { ...m, content: `[ERROR: Retry]`, status: 'done' } : m
+        ),
+        isStreaming: false,
+      }));
+    }
+  },
+
+  /** AIDJ: NCM personal FM + DeepSeek opening + MiMo TTS */
+  sendAidj: async (text: string) => {
+    const userMsg: Message = {
+      id: crypto.randomUUID(), role: 'user', content: text || '私人漫游', played: true, timestamp: new Date().toISOString(),
+    };
+    const djMsg: Message = {
+      id: crypto.randomUUID(), role: 'dj', content: '', status: 'thinking', played: false, timestamp: new Date().toISOString(),
+    };
+    set((s) => ({ messages: [...s.messages, userMsg, djMsg], isStreaming: true }));
+
+    try {
+      const result = await apiClient.aidj(text, (token) => {
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === djMsg.id ? { ...m, content: m.content + token, status: 'streaming' } : m
+          ),
+        }));
+      });
+
+      if (result.error) throw new Error(result.error);
+
+      const ttsUrl = result.ttsUrl || '';
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, content: result.say || m.content } : m
+        ),
+        isStreaming: false,
+      }));
+
+      if (result.songs?.length) {
+        const { usePlayerStore } = await import('./playerStore');
+        const ps = usePlayerStore.getState();
+        const intros = result.songIntros || {};
+        ps.init();
+        ps.setPlaylist(
+          result.songs.map((s: any) => ({
+            song_id: s.id, song_name: s.name, artist: s.artist,
+            intro: s.intro || '', introUrl: intros[s.id] || '',
+            duration_ms: 240000,
+          }))
+        );
+        if (ttsUrl) {
+          ps.playNarrationThenMusic(ttsUrl, 0);
+        } else {
+          ps.playTrack(0);
+        }
+      }
+    } catch (err: any) {
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === djMsg.id ? { ...m, content: `[AIDJ: Retry]`, status: 'done' } : m
         ),
         isStreaming: false,
       }));

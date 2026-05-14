@@ -7,12 +7,24 @@ export interface Song {
 let audio: HTMLAudioElement | null = null;
 let introAudio: HTMLAudioElement | null = null;
 let progressTimer = 0;
+let errorCount = 0;
 
 function ensureAudio() {
   if (!audio) {
     audio = new Audio();
     audio.volume = 0.7;
-    audio.addEventListener('error', () => usePlayerStore.getState().nextTrack());
+    audio.addEventListener('error', () => {
+      errorCount++;
+      if (errorCount <= 1) {
+        // Try next track on first error, but don't loop infinitely
+        usePlayerStore.getState().nextTrack();
+      } else {
+        usePlayerStore.setState({ musicPlaying: false, djNarrating: false });
+      }
+    });
+    audio.addEventListener('ended', () => {
+      usePlayerStore.getState().nextTrack();
+    });
   }
   if (!introAudio) {
     introAudio = new Audio();
@@ -33,6 +45,8 @@ function startProgress() {
   }, 250);
 }
 
+let narrationAudio: HTMLAudioElement | null = null;
+
 interface PlayerState {
   playlist: Song[];
   currentIndex: number;
@@ -49,6 +63,7 @@ interface PlayerState {
   prevTrack: () => void;
   seekTo: (pct: number) => void;
   setVolume: (v: number) => void;
+  playNarrationThenMusic: (narrationUrl: string, startIndex?: number) => void;
   init: () => void;
 }
 
@@ -81,6 +96,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     a.volume = volume;
     a.pause();
 
+    errorCount = 0;
     set({ currentIndex: i, musicPlaying: false, progressMs: 0 });
     localStorage.setItem(STORAGE, JSON.stringify({ playlist, currentIndex: i }));
 
@@ -93,13 +109,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
     if (song.introUrl) {
       const ia = ensureAudio().introAudio!;
+      ia.pause();
       set({ djNarrating: true });
       ia.src = song.introUrl;
       ia.onended = playSong;
       ia.onerror = playSong;
       ia.play().catch(playSong);
-      audio!.volume = volume * 0.3; // duck during intro
-      audio!.play().catch(() => {}); // keep playing current if there is one
     } else {
       playSong();
     }
@@ -125,4 +140,65 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   seekTo: (pct) => { if (audio && audio.duration) audio.currentTime = pct * audio.duration; },
   setVolume: (v) => { set({ volume: v }); if (audio) audio.volume = v; },
+
+  playNarrationThenMusic: (narrationUrl: string, startIndex?: number) => {
+    const savedVolume = get().volume;
+    if (narrationAudio) {
+      narrationAudio.pause();
+      narrationAudio.src = '';
+    }
+    narrationAudio = new Audio(narrationUrl);
+    narrationAudio.volume = 1;
+
+    // Duck main audio during narration
+    if (audio && !audio.paused) {
+      const steps = 6;
+      const targetVol = savedVolume * 0.15;
+      const startVol = audio.volume;
+      const delta = (targetVol - startVol) / steps;
+      let step = 0;
+      const fadeDown = setInterval(() => {
+        step++;
+        if (audio && step <= steps) {
+          audio.volume = Math.max(0, startVol + delta * step);
+        }
+      }, 50);
+
+      narrationAudio.onended = () => {
+        clearInterval(fadeDown);
+        if (audio) {
+          audio.volume = savedVolume;
+        }
+        narrationAudio = null;
+        set({ djNarrating: false });
+        if (startIndex !== undefined) get().playTrack(startIndex);
+      };
+      narrationAudio.onerror = () => {
+        clearInterval(fadeDown);
+        if (audio) audio.volume = savedVolume;
+        narrationAudio = null;
+        set({ djNarrating: false });
+        if (startIndex !== undefined) get().playTrack(startIndex);
+      };
+    } else {
+      narrationAudio.onended = () => {
+        narrationAudio = null;
+        set({ djNarrating: false });
+        if (startIndex !== undefined) get().playTrack(startIndex);
+      };
+      narrationAudio.onerror = () => {
+        narrationAudio = null;
+        set({ djNarrating: false });
+        if (startIndex !== undefined) get().playTrack(startIndex);
+      };
+    }
+
+    set({ djNarrating: true });
+    narrationAudio.play().catch(() => {
+      if (audio) audio.volume = savedVolume;
+      narrationAudio = null;
+      set({ djNarrating: false });
+      if (startIndex !== undefined) get().playTrack(startIndex);
+    });
+  },
 }));

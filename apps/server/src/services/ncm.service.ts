@@ -42,14 +42,12 @@ export const ncmService = {
   },
 
   async getSongUrl(songId: string): Promise<string | null> {
-    // lossless for VIP, falls back to standard if not available
-    const json = await fetchNcm('/song/url/v1', { id: songId, level: 'lossless' });
-    if (!json?.data?.[0]?.url) {
-      // Fallback to standard
-      const json2 = await fetchNcm('/song/url/v1', { id: songId, level: 'standard' });
-      return json2?.data?.[0]?.url || null;
-    }
-    return json.data[0].url;
+    // Try lossless and standard in parallel, use lossless if available
+    const [lossless, standard] = await Promise.all([
+      fetchNcm('/song/url/v1', { id: songId, level: 'lossless' }),
+      fetchNcm('/song/url/v1', { id: songId, level: 'standard' }),
+    ]);
+    return lossless?.data?.[0]?.url || standard?.data?.[0]?.url || null;
   },
 
   async getSongDetail(songId: string): Promise<SongDetail | null> {
@@ -70,6 +68,19 @@ export const ncmService = {
   async getLyric(songId: string): Promise<string> {
     const json = await fetchNcm('/lyric', { id: songId });
     return json?.lrc?.lyric || '';
+  },
+
+  /** Get personalized FM radio recommendations (3 songs per call) */
+  async getPersonalFm(): Promise<SearchResult[]> {
+    const json = await fetchNcm('/personal_fm');
+    if (!json?.data) return [];
+    return json.data.map((s: any) => ({
+      id: String(s.id),
+      name: s.name,
+      artist: (s.artists || s.ar || []).map((a: any) => a.name).join(', '),
+      album: s.album?.name || s.al?.name || '',
+      duration: Math.floor((s.duration || s.dt || 0) / 1000),
+    }));
   },
 
   async getUserPlaylists(uid?: string): Promise<any[]> {

@@ -59,6 +59,33 @@ export const apiClient = {
     return resp.json();
   },
 
+  async aidj(text: string, onToken: (t: string) => void): Promise<any> {
+    const resp = await fetch(`${BASE}/api/aidj`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    const reader = resp.body?.getReader();
+    if (!reader) throw new Error('No response body');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: any = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = JSON.parse(line.slice(6));
+        if (data.done) { result = data; }
+        else if (data.token) { onToken(data.token); }
+      }
+    }
+    return result || { say: '', songs: [], ttsUrl: '', songIntros: {} };
+  },
+
   async getProfile(): Promise<{ totalHours: number; totalPlays: number; topArtists: any[] }> {
     const resp = await fetch(`${BASE}/api/profile`);
     return resp.json();

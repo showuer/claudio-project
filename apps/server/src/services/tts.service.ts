@@ -9,8 +9,15 @@ const CACHE_DIR = path.join(__dirname, '..', '..', '..', '..', 'cache', 'tts');
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 function hashText(text: string): string {
-  return crypto.createHash('md5').update(text).digest('hex');
+  const voice = config.MIMO_VOICE_ID || '白桦';
+  return crypto.createHash('md5').update(`v3|${voice}|${text}`).digest('hex');
 }
+
+// Style instruction for a warm, storytelling male radio DJ voice
+const DJ_VOICE_STYLE =
+  '用低沉温暖的磁性男声，语速稍慢，像一个深夜电台的DJ在跟一个老朋友说话。' +
+  '声音柔和，有一种经历过很多故事后的平静和真诚，不要播音腔，不要用力过猛，' +
+  '就像在录音棚里，只有你和对面的一个人。';
 
 async function tryMimo(text: string): Promise<Buffer | null> {
   if (!config.MIMO_API_KEY) return null;
@@ -19,14 +26,14 @@ async function tryMimo(text: string): Promise<Buffer | null> {
       method: 'POST',
       headers: { 'api-key': config.MIMO_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'mimo-v2-tts',
+        model: 'mimo-v2.5-tts',
         messages: [
-          { role: 'user', content: text },
+          { role: 'user', content: DJ_VOICE_STYLE },
           { role: 'assistant', content: text },
         ],
-        audio: { format: 'mp3', voice: 'default_zh' },
+        audio: { format: 'mp3', voice: config.MIMO_VOICE_ID || '白桦' },
       }),
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(30000),
     });
     if (!resp.ok) return null;
     const json = await resp.json() as { choices?: Array<{ message?: { audio?: { data?: string } } }> };
