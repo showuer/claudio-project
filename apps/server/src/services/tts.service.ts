@@ -9,15 +9,15 @@ const CACHE_DIR = path.join(__dirname, '..', '..', '..', '..', 'cache', 'tts');
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 function hashText(text: string): string {
-  const voice = config.MIMO_VOICE_ID || '白桦';
+  const voice = config.MIMO_VOICE_ID || '茉莉';
   return crypto.createHash('md5').update(`v3|${voice}|${text}`).digest('hex');
 }
 
-// Style instruction for a warm, storytelling male radio DJ voice
+// Style instruction: natural female DJ voice, relaxed and conversational
 const DJ_VOICE_STYLE =
-  '用低沉温暖的磁性男声，语速稍慢，像一个深夜电台的DJ在跟一个老朋友说话。' +
-  '声音柔和，有一种经历过很多故事后的平静和真诚，不要播音腔，不要用力过猛，' +
-  '就像在录音棚里，只有你和对面的一个人。';
+  '用正常的语速和语气说话，像朋友之间聊天一样自然。' +
+  '不要朗诵腔，不要播音腔，不要戏剧化的起伏。' +
+  '就是普通人在说话，放松、随意、真诚。';
 
 async function tryMimo(text: string): Promise<Buffer | null> {
   if (!config.MIMO_API_KEY) return null;
@@ -31,7 +31,7 @@ async function tryMimo(text: string): Promise<Buffer | null> {
           { role: 'user', content: DJ_VOICE_STYLE },
           { role: 'assistant', content: text },
         ],
-        audio: { format: 'mp3', voice: config.MIMO_VOICE_ID || '白桦' },
+        audio: { format: 'mp3', voice: config.MIMO_VOICE_ID || '茉莉' },
       }),
       signal: AbortSignal.timeout(30000),
     });

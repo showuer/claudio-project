@@ -150,53 +150,66 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     narrationAudio = new Audio(narrationUrl);
     narrationAudio.volume = 1;
 
-    // Duck main audio during narration
-    if (audio && !audio.paused) {
-      const steps = 6;
-      const targetVol = savedVolume * 0.15;
-      const startVol = audio.volume;
-      const delta = (targetVol - startVol) / steps;
-      let step = 0;
-      const fadeDown = setInterval(() => {
-        step++;
-        if (audio && step <= steps) {
-          audio.volume = Math.max(0, startVol + delta * step);
-        }
-      }, 50);
+    let crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
+    let fadeInterval: ReturnType<typeof setInterval> | null = null;
+    let musicStarted = false;
 
-      narrationAudio.onended = () => {
-        clearInterval(fadeDown);
-        if (audio) {
-          audio.volume = savedVolume;
-        }
-        narrationAudio = null;
+    const cleanup = () => {
+      if (crossfadeTimer) clearTimeout(crossfadeTimer);
+      // Don't clear fadeInterval — it continues after narration ends
+      narrationAudio = null;
+    };
+
+    // Start music 7s before narration ends at volume 0, fade up over 10s
+    const startMusicCrossfade = () => {
+      if (musicStarted || startIndex === undefined) return;
+      musicStarted = true;
+      get().playTrack(startIndex);
+      if (audio) {
+        audio.volume = 0;
+        const steps = 40;
+        const delta = savedVolume / steps;
+        let step = 0;
+        fadeInterval = setInterval(() => {
+          step++;
+          if (audio && step <= steps) {
+            audio.volume = Math.min(savedVolume, delta * step);
+          } else {
+            if (fadeInterval) { clearInterval(fadeInterval); fadeInterval = null; }
+            set({ djNarrating: false });
+          }
+        }, 250);
+      }
+    };
+
+    narrationAudio.onloadedmetadata = () => {
+      const dur = narrationAudio?.duration || 0;
+      if (dur > 10 && startIndex !== undefined) {
+        const delay = Math.max(0, (dur - 7) * 1000);
+        crossfadeTimer = setTimeout(startMusicCrossfade, delay);
+      }
+    };
+
+    narrationAudio.onended = () => {
+      if (crossfadeTimer) clearTimeout(crossfadeTimer);
+      narrationAudio = null;
+      // If narration was too short, start music now; otherwise fade is already running
+      if (!musicStarted && startIndex !== undefined) {
+        startMusicCrossfade();
+      }
+    };
+    narrationAudio.onerror = () => {
+      if (crossfadeTimer) clearTimeout(crossfadeTimer);
+      narrationAudio = null;
+      if (!musicStarted && startIndex !== undefined) {
+        startMusicCrossfade();
+      } else {
         set({ djNarrating: false });
-        if (startIndex !== undefined) get().playTrack(startIndex);
-      };
-      narrationAudio.onerror = () => {
-        clearInterval(fadeDown);
-        if (audio) audio.volume = savedVolume;
-        narrationAudio = null;
-        set({ djNarrating: false });
-        if (startIndex !== undefined) get().playTrack(startIndex);
-      };
-    } else {
-      narrationAudio.onended = () => {
-        narrationAudio = null;
-        set({ djNarrating: false });
-        if (startIndex !== undefined) get().playTrack(startIndex);
-      };
-      narrationAudio.onerror = () => {
-        narrationAudio = null;
-        set({ djNarrating: false });
-        if (startIndex !== undefined) get().playTrack(startIndex);
-      };
-    }
+      }
+    };
 
     set({ djNarrating: true });
     narrationAudio.play().catch(() => {
-      if (audio) audio.volume = savedVolume;
-      narrationAudio = null;
       set({ djNarrating: false });
       if (startIndex !== undefined) get().playTrack(startIndex);
     });

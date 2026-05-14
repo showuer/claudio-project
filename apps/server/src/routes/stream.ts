@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { ncmService } from '../services/ncm.service.js';
 
 export function registerStreamRoutes(app: FastifyInstance) {
-  // Redirect to NetEase CDN URL — browser handles Range/seek natively
   app.get('/api/stream/:songId', async (req, reply) => {
     const { songId } = req.params as { songId: string };
     const url = await ncmService.getSongUrl(songId);
@@ -11,6 +10,48 @@ export function registerStreamRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'URL not available' });
     }
 
-    reply.redirect(302, url);
+    try {
+      const headers: Record<string, string> = {};
+      const range = req.headers.range;
+      if (range) headers.Range = range;
+
+      const resp = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!resp.ok || !resp.body) {
+        return reply.status(502).send({ error: 'Stream fetch failed' });
+      }
+
+      const status = resp.status;
+      const ct = resp.headers.get('content-type') || 'audio/mpeg';
+      const cl = resp.headers.get('content-length');
+      const cr = resp.headers.get('content-range');
+      const acr = resp.headers.get('accept-ranges');
+
+      reply.header('Content-Type', ct);
+      reply.header('Accept-Ranges', acr || 'bytes');
+      if (cl) reply.header('Content-Length', cl);
+      if (cr) reply.header('Content-Range', cr);
+
+      // Stream the response body
+      const reader = resp.body.getReader();
+      reply.hijack();
+      reply.raw.writeHead(status, reply.getHeaders());
+
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { reply.raw.end(); break; }
+            reply.raw.write(value);
+          }
+        } catch { reply.raw.destroy(); }
+      };
+      pump();
+    } catch {
+      return reply.status(502).send({ error: 'Stream failed' });
+    }
   });
 }

@@ -10,9 +10,9 @@ export default function InteractiveDotGrid() {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const SPACING = 32;
+    const SPACING = 22;
     const RADIUS = 100;
-    const DOT_R = 1.2;
+    const DOT_R = 1.0;
 
     let mouseX = -999;
     let mouseY = -999;
@@ -33,15 +33,15 @@ export default function InteractiveDotGrid() {
       const h = canvas!.height / dpr;
       ctx!.clearRect(0, 0, w, h);
 
-      const startCol = Math.floor(-SPACING / 2);
+      const startCol = 0;
       const endCol = Math.ceil(w / SPACING) + 1;
-      const startRow = Math.floor(-SPACING / 2);
+      const startRow = 0;
       const endRow = Math.ceil(h / SPACING) + 1;
 
       for (let row = startRow; row <= endRow; row++) {
         for (let col = startCol; col <= endCol; col++) {
-          const x = col * SPACING + SPACING / 2;
-          const y = row * SPACING + SPACING / 2;
+          const x = col * SPACING;
+          const y = row * SPACING;
 
           const dx = x - mouseX;
           const dy = y - mouseY;
@@ -49,20 +49,17 @@ export default function InteractiveDotGrid() {
 
           if (dist < RADIUS) {
             const t = 1 - dist / RADIUS;
-            const alpha = 0.10 + t * 0.40;
+            const alpha = 0.15 + t * 0.45;
+            const size = DOT_R + t * 1.5;
             ctx!.fillStyle = `rgba(0,255,65,${alpha.toFixed(2)})`;
+            ctx!.shadowColor = `rgba(0,255,65,${(t * 0.3).toFixed(2)})`;
+            ctx!.shadowBlur = t * 6;
             ctx!.beginPath();
-            ctx!.arc(x, y, DOT_R + t * 1.2, 0, Math.PI * 2);
+            ctx!.arc(x, y, size, 0, Math.PI * 2);
             ctx!.fill();
-
-            // Outer glow
-            ctx!.fillStyle = `rgba(0,255,65,${(t * 0.03).toFixed(2)})`;
-            ctx!.beginPath();
-            ctx!.arc(x, y, DOT_R + 3 * t, 0, Math.PI * 2);
-            ctx!.fill();
+            ctx!.shadowBlur = 0;
           } else {
-            // Regular dot — slightly brighter
-            ctx!.fillStyle = 'rgba(255,255,255,0.16)';
+            ctx!.fillStyle = 'rgba(255,255,255,0.22)';
             ctx!.beginPath();
             ctx!.arc(x, y, DOT_R, 0, Math.PI * 2);
             ctx!.fill();

@@ -72,21 +72,9 @@ export function registerChatRoutes(app: FastifyInstance) {
       // Normalize: ensure songs array exists
       const songs = output.songs || output.play?.map(s => ({ ...s, intro: '' })) || [];
 
-      // TTS for opening narration + per-song intros (parallel)
-      const introTasks = songs
-        .filter((s) => s.intro)
-        .map(async (s) => {
-          const introTts = await ttsService.synthesize(s.intro);
-          return { id: s.id, url: introTts.audioUrl };
-        });
-      const [ttsResult, ...introResults] = await Promise.all([
-        ttsService.synthesize(output.say),
-        ...introTasks,
-      ]);
+      // TTS for opening narration only
+      const ttsResult = await ttsService.synthesize(output.say);
       const songIntros: Record<string, string> = {};
-      for (const r of introResults) {
-        if (r.url) songIntros[r.id] = r.url;
-      }
 
       const djMsgId = crypto.randomUUID();
       await messagesRepo.insert({
@@ -119,18 +107,15 @@ export function registerChatRoutes(app: FastifyInstance) {
     });
 
     try {
-      // 1. Get NCM personal FM songs (fast, pre-personalized)
+      // 1. Get NCM personal FM songs
       const fmSongs = await ncmService.getPersonalFm();
       const songList = fmSongs.length > 0 ? fmSongs : [];
 
-      reply.raw.write(`data: ${JSON.stringify({ token: `[AIDJ] 私人漫游找到 ${songList.length} 首歌` })}\n\n`);
-
-      // 2. DeepSeek opening monologue based on user input + weather + time + song context
+      // 2. DeepSeek opening monologue
       const ctx = await contextService.assembleContext(userInput);
-      const songContext = songList.slice(0, 10).map((s, i) => `${i + 1}. ${s.name} - ${s.artist}`).join('\n');
       const openingPrompt = [
         { role: 'system' as const, content: ctx.systemPrompt },
-        { role: 'user' as const, content: `网易云私人漫游推荐了以下歌曲:\n${songContext}\n\n用户说: ${userInput}\n\n请为这段音乐旅程写一段开场白（say字段），200-300字。不需要选歌（歌曲已经定好了），只需要写开场独白。返回JSON: {"theme":"主题","say":"开场白200-300字"}` },
+        { role: 'user' as const, content: `用户说: ${userInput}\n\n请写开场白，返回JSON: {"theme":"主题","say":"80-150字开场白"}` },
       ];
 
       let fullOutput = '';
@@ -148,11 +133,9 @@ export function registerChatRoutes(app: FastifyInstance) {
         opening = match ? JSON.parse(match[0]) : { say: fullOutput.trim() || '来听歌吧。' };
       }
 
-      // 3. TTS for opening (parallel with song intros if songs have them)
+      // 3. TTS for opening
       const ttsResult = await ttsService.synthesize(opening.say);
 
-      // 4. Get song playback URLs
-      const songIntros: Record<string, string> = {};
       const songs = songList.map((s) => ({
         id: s.id, name: s.name, artist: s.artist, intro: '',
       }));
@@ -164,7 +147,7 @@ export function registerChatRoutes(app: FastifyInstance) {
         ttsUrl: ttsResult.audioUrl,
         theme: opening.theme || '私人漫游',
         songs,
-        songIntros,
+        songIntros: {},
         source: 'aidj',
       })}\n\n`);
     } catch (err: any) {
