@@ -110,8 +110,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     localStorage.setItem(STORAGE, JSON.stringify({ playlist, currentIndex: i }));
 
     // Intro first, then song
-    const playSong = () => {
-      a.src = `/api/stream/${song.song_id}`;
+    const playSong = async () => {
+      try {
+        const resp = await fetch(`/api/player/url/${song.song_id}`);
+        const { url } = await resp.json();
+        a.src = url || `/api/stream/${song.song_id}`;
+      } catch {
+        a.src = `/api/stream/${song.song_id}`;
+      }
       a.play().catch(() => {});
       set({ musicPlaying: true, djNarrating: false });
     };

@@ -27,6 +27,9 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    strictPort: true,
+    host: true,
+    allowedHosts: ['showu.xyz', '*.showu.xyz', 'localhost'],
     proxy: {
       '/api': 'http://localhost:8080',
       '/ws': { target: 'ws://localhost:8080', ws: true },
