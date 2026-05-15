@@ -91,4 +91,41 @@ export const ncmService = {
       coverUrl: p.coverImgUrl || '', trackCount: p.trackCount || 0,
     }));
   },
+
+  /** Get tracks from a specific playlist */
+  async getPlaylistTracks(playlistId: string, limit: number = 50): Promise<SearchResult[]> {
+    const json = await fetchNcm('/playlist/track/all', { id: playlistId, limit: String(limit) });
+    if (!json?.songs && !json?.body?.songs) {
+      // playlist/track/all returns nested structure
+      const songs = json?.data || json?.songs || [];
+      return (Array.isArray(songs) ? songs : []).slice(0, limit).map((s: any) => ({
+        id: String(s.id),
+        name: s.name || s.songName || '',
+        artist: (s.artists || s.ar || []).map((a: any) => a.name).join(', '),
+        album: s.album?.name || s.al?.name || '',
+        duration: Math.floor((s.duration || s.dt || 0) / 1000),
+      }));
+    }
+    const songs = json?.songs || json?.body?.songs || [];
+    return songs.slice(0, limit).map((s: any) => ({
+      id: String(s.id),
+      name: s.name,
+      artist: (s.ar || []).map((a: any) => a.name).join(', '),
+      album: s.al?.name || '',
+      duration: Math.floor((s.dt || 0) / 1000),
+    }));
+  },
+
+  /** Get daily recommended songs (30-35 songs) */
+  async getDailyRecommend(): Promise<SearchResult[]> {
+    const json = await fetchNcm('/recommend/songs');
+    if (!json?.data?.dailySongs) return [];
+    return json.data.dailySongs.map((s: any) => ({
+      id: String(s.id),
+      name: s.name,
+      artist: (s.ar || []).map((a: any) => a.name).join(', '),
+      album: s.al?.name || '',
+      duration: Math.floor((s.dt || 0) / 1000),
+    }));
+  },
 };

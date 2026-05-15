@@ -3,11 +3,15 @@ import { DotMatrixLabel } from './DotMatrixDisplay';
 
 const AVATAR = '/avatars/claude.png';
 
-interface ProfileStyles {
+interface ProfileData {
   tags: string[];
   topArtists: string[];
   genresCount: number;
   copy: string;
+  mood: string;
+  philosophy: string;
+  totalHours: number;
+  totalPlays: number;
 }
 
 interface Props {
@@ -103,15 +107,18 @@ function ProfileDotCanvas() {
 }
 
 export function ProfileCard({ open, onToggle }: Props) {
-  const [profile, setProfile] = useState<ProfileStyles | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
   const [imgErr, setImgErr] = useState(false);
+  const [editingTag, setEditingTag] = useState(false);
+  const [newTag, setNewTag] = useState('');
+  const [saving, setSaving] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open && !profile) {
+    if (open) {
       fetch('/api/profile/styles').then(r => r.json()).then(setProfile).catch(() => {});
     }
-  }, [open, profile]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -123,6 +130,38 @@ export function ProfileCard({ open, onToggle }: Props) {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open, onToggle]);
+
+  const saveTags = useCallback(async (tags: string[]) => {
+    setSaving(true);
+    try {
+      const resp = await fetch('/api/profile/styles', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags }),
+      });
+      const json = await resp.json();
+      if (json.saved) {
+        setProfile((p) => p ? { ...p, tags: json.tags, genresCount: json.tags.length } : p);
+      }
+    } catch { /* ignore */ }
+    setSaving(false);
+  }, []);
+
+  const removeTag = (tag: string) => {
+    if (!profile) return;
+    saveTags(profile.tags.filter((t) => t !== tag));
+  };
+
+  const addTag = () => {
+    if (!profile || !newTag.trim()) return;
+    const tag = newTag.trim().toUpperCase();
+    if (profile.tags.includes(tag)) { setNewTag(''); return; }
+    saveTags([...profile.tags, tag]);
+    setNewTag('');
+    setEditingTag(false);
+  };
+
+  const tags = profile?.tags || [];
 
   return (
     <div className="profile-trigger">
@@ -157,19 +196,40 @@ export function ProfileCard({ open, onToggle }: Props) {
                 </div>
               </div>
               <div className="profile-card-stats">
-                <div><small>ON AIR</small><strong>24/7</strong></div>
-                <div><small>GENRES</small><strong>{String(profile?.genresCount || 0).padStart(2, '0')}</strong></div>
-                <div><small>STYLE</small><strong>TASTE</strong></div>
+                <div><small>收听时长</small><strong>{profile?.totalHours ? Math.floor(profile.totalHours) + 'H' : '0H'}</strong></div>
+                <div><small>播放次数</small><strong>{profile?.totalPlays || 0}</strong></div>
+                <div><small>心情</small><strong>{profile?.mood ? profile.mood.slice(0, 4) : '···'}</strong></div>
               </div>
+
+              {/* Editable tags */}
               <div className="profile-card-tags">
-                {(profile?.tags || []).slice(0, 6).map(tag => (
-                  <b key={tag}>{tag}</b>
+                {tags.map(tag => (
+                  <b key={tag} onClick={() => removeTag(tag)} title="点击删除">
+                    {tag} <span className="tag-x">×</span>
+                  </b>
                 ))}
+                {editingTag ? (
+                  <b className="tag-add">
+                    <input
+                      className="tag-input"
+                      value={newTag}
+                      onChange={(e) => setNewTag(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') addTag(); if (e.key === 'Escape') setEditingTag(false); }}
+                      onBlur={() => { addTag(); setEditingTag(false); }}
+                      placeholder="新标签..."
+                      autoFocus
+                      maxLength={20}
+                    />
+                  </b>
+                ) : (
+                  <b className="tag-add" onClick={() => setEditingTag(true)}>+</b>
+                )}
+                {saving && <span className="tag-saving">···</span>}
               </div>
-              {profile?.topArtists.length ? (
-                <div className="profile-card-artists">
-                  <small>TOP ARTISTS</small>
-                  <span>{profile.topArtists.join(' · ')}</span>
+
+              {profile?.philosophy ? (
+                <div className="profile-card-philosophy">
+                  <p>"{profile.philosophy}"</p>
                 </div>
               ) : null}
             </div>

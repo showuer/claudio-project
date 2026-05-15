@@ -13,6 +13,7 @@ import { registerSearchRoutes } from './routes/search.js';
 import { registerPlaylistRoutes } from './routes/playlist.js';
 import { registerProfileRoutes } from './routes/profile.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerLyricRoutes } from './routes/lyric.js';
 import { registerWebSocket } from './ws.js';
 import { startScheduler, setBroadcast } from './services/scheduler.service.js';
 import { broadcast } from './ws.js';
@@ -45,6 +46,7 @@ registerSearchRoutes(app);
 registerPlaylistRoutes(app);
 registerProfileRoutes(app);
 registerSettingsRoutes(app);
+registerLyricRoutes(app);
 
 setBroadcast(broadcast);
 startScheduler();

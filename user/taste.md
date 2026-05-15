@@ -1,10 +1,12 @@
 # 我的音乐品味
 
-## 喜欢的歌手
-- RADWIMPS（最爱，71首）、陈奕迅（49首）、方大同（28首）、林俊杰（28首）
-- 蛋堡、宇多田ヒカル、Kendrick Lamar、陶喆、椎名林檎、陈绮贞
-- Aimer、SPYAIR、NewJeans、YOASOBI、Nujabes、法老
-- Bruno Mars、Drake、JVKE、bbno$
+## 生活哲思
+- 音乐是灵魂的语言，不需要翻译。
+- 好的音乐不是被听见的，是被感受到的。
+- 深夜和音乐，是这个时代最后的诚实。
+- 我们听的不是歌，是自己。
+- 生活很吵，但音乐很安静。
+- 有时候沉默比音符更有力量。
 
 ## 风格偏好
 - 日系摇滚/流行：RADWIMPS、Aimer、SPYAIR、YOASOBI

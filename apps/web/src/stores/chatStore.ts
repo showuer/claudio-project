@@ -1,6 +1,16 @@
 import { create } from 'zustand';
 import { apiClient } from '../api/client';
 
+function uuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return uuid();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 interface Message {
   id: string;
   role: 'user' | 'dj' | 'system';
@@ -37,10 +47,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (text: string) => {
     const userMsg: Message = {
-      id: crypto.randomUUID(), role: 'user', content: text, played: true, timestamp: new Date().toISOString(),
+      id: uuid(), role: 'user', content: text, played: true, timestamp: new Date().toISOString(),
     };
     const djMsg: Message = {
-      id: crypto.randomUUID(), role: 'dj', content: '', status: 'thinking', played: false, timestamp: new Date().toISOString(),
+      id: uuid(), role: 'dj', content: '', status: 'thinking', played: false, timestamp: new Date().toISOString(),
     };
     set((s) => ({ messages: [...s.messages, userMsg, djMsg], isStreaming: true }));
 
@@ -115,10 +125,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   /** AIDJ: NCM personal FM + DeepSeek opening + MiMo TTS */
   sendAidj: async (text: string) => {
     const userMsg: Message = {
-      id: crypto.randomUUID(), role: 'user', content: text || '私人漫游', played: true, timestamp: new Date().toISOString(),
+      id: uuid(), role: 'user', content: text || '私人漫游', played: true, timestamp: new Date().toISOString(),
     };
     const djMsg: Message = {
-      id: crypto.randomUUID(), role: 'dj', content: '', status: 'thinking', played: false, timestamp: new Date().toISOString(),
+      id: uuid(), role: 'dj', content: '', status: 'thinking', played: false, timestamp: new Date().toISOString(),
     };
     set((s) => ({ messages: [...s.messages, userMsg, djMsg], isStreaming: true }));
 

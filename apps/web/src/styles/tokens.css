@@ -7,8 +7,8 @@
 
   --text-display:   #EFEFEF;
   --text-primary:   #EFEFEF;
-  --text-secondary: #7A7A7A;
-  --text-disabled:  #5A5A5A;
+  --text-secondary: #BBBBBB;
+  --text-disabled:  #AAAAAA;
 
   --accent:         #00FF41;
   --accent-dim:     rgba(0,255,65,0.08);

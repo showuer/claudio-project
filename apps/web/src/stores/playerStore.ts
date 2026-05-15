@@ -55,6 +55,9 @@ interface PlayerState {
   durationMs: number;
   djNarrating: boolean;
   volume: number;
+  lyricLrc: string;
+  lyricKlyric: string;
+  isLiked: boolean;
 
   setPlaylist: (s: Song[]) => void;
   playTrack: (i: number) => void;
@@ -64,6 +67,9 @@ interface PlayerState {
   seekTo: (pct: number) => void;
   setVolume: (v: number) => void;
   playNarrationThenMusic: (narrationUrl: string, startIndex?: number) => void;
+  fetchLyric: (songId: string) => Promise<void>;
+  fetchLikeStatus: (songId: string) => Promise<void>;
+  toggleLike: (songId: string) => Promise<void>;
   init: () => void;
 }
 
@@ -77,6 +83,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   durationMs: 240000,
   djNarrating: false,
   volume: 0.7,
+  lyricLrc: '',
+  lyricKlyric: '',
+  isLiked: false,
 
   init: () => {
     ensureAudio();
@@ -213,5 +222,39 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       set({ djNarrating: false });
       if (startIndex !== undefined) get().playTrack(startIndex);
     });
+  },
+
+  fetchLyric: async (songId) => {
+    try {
+      const resp = await fetch(`/api/lyric/${songId}`);
+      const json = await resp.json();
+      set({ lyricLrc: json.lrc || '', lyricKlyric: json.klyric || '' });
+    } catch {
+      set({ lyricLrc: '', lyricKlyric: '' });
+    }
+  },
+
+  fetchLikeStatus: async (songId) => {
+    try {
+      const resp = await fetch(`/api/like/check/${songId}`);
+      const json = await resp.json();
+      set({ isLiked: json.liked || false });
+    } catch {
+      set({ isLiked: false });
+    }
+  },
+
+  toggleLike: async (songId) => {
+    const next = !get().isLiked;
+    set({ isLiked: next });
+    try {
+      await fetch(`/api/like/${songId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ like: next }),
+      });
+    } catch {
+      set({ isLiked: !next });
+    }
   },
 }));

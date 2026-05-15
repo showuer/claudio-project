@@ -7,8 +7,6 @@ import { ProfileCard } from '../components/ProfileCard';
 
 const AI_AVATAR = '/avatars/claude.png';
 const USER_AVATAR = '/avatars/me.png';
-const TAGS = ['MORNING', 'CODING', 'NAP', 'RAIN', 'RELAX', 'QUIET'];
-const AIDJ_TAG = 'AIDJ';
 
 export default function HomePage() {
   const p = usePlayerStore((s) => s);
@@ -40,7 +38,7 @@ export default function HomePage() {
 
     wsClient.on('dj_message', (data: any) => {
       c.addMessage({
-        id: data.id || crypto.randomUUID(), role: 'dj', content: data.say,
+        id: data.id || (() => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36)+Math.random().toString(36).slice(2); } })(), role: 'dj', content: data.say,
         ttsUrl: data.ttsUrl, status: 'done', played: false, timestamp: new Date().toISOString(),
       });
 
@@ -116,6 +114,13 @@ export default function HomePage() {
   const active = p.musicPlaying || p.djNarrating;
   const pct = p.durationMs > 0 ? (p.progressMs / p.durationMs) * 100 : 0;
 
+  // Fetch like status when song changes
+  useEffect(() => {
+    if (song?.song_id) {
+      p.fetchLikeStatus(song.song_id);
+    }
+  }, [song?.song_id]);
+
   const wd = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
   const mo = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
@@ -158,29 +163,44 @@ export default function HomePage() {
 
       {/* 3. PLAYER */}
       <div className="player-strip">
-        <div className="eq-bars" style={{ opacity: p.musicPlaying ? 1 : 0.25 }}>
-          <div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" />
-        </div>
-        <div className="player-meta">
-          <div className="player-title">
-            <span className="player-song">{song?.song_name || 'STANDBY'}</span>
-            {song?.artist && <span className="player-artist"> — {song.artist}</span>}
+        <div className="player-left">
+          <div className="eq-bars" style={{ opacity: p.musicPlaying ? 1 : 0.25 }}>
+            <div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" />
           </div>
-          <div className={`player-sub ${p.musicPlaying ? 'live' : ''}`}>
-            {p.musicPlaying ? 'PLAYING' : p.djNarrating ? 'INTRO' : 'PAUSED'}
+          <div className="player-meta">
+            <div className="player-title">
+              <span className="player-song">{song?.song_name || 'STANDBY'}</span>
+              {song?.artist && <span className="player-artist"> — {song.artist}</span>}
+            </div>
+            <div className={`player-sub ${p.musicPlaying ? 'live' : ''}`}>
+              {p.musicPlaying ? 'PLAYING' : p.djNarrating ? 'INTRO' : 'PAUSED'}
+            </div>
           </div>
         </div>
-        <button className="btn-c" onClick={p.prevTrack}>&#9664;&#9664;</button>
-        <button className={`btn-c ${p.musicPlaying ? 'active' : ''}`} onClick={p.toggleMusic}>
-          {p.musicPlaying ? '||' : '▶'}
-        </button>
-        <button className="btn-c" onClick={p.nextTrack}>&#9654;&#9654;</button>
-        <span className="vol-label">VOL</span>
-        <div className="vol-track" onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          p.setVolume((e.clientX - r.left) / r.width);
-        }}>
-          <div className="vol-fill" style={{ width: `${p.volume * 100}%` }} />
+        <div className="player-controls">
+          <button className="btn-c" onClick={p.prevTrack}>&#9664;&#9664;</button>
+          <button className={`btn-c ${p.musicPlaying ? 'active' : ''}`} onClick={p.toggleMusic}>
+            {p.musicPlaying ? '||' : '▶'}
+          </button>
+          <button className="btn-c" onClick={p.nextTrack}>&#9654;&#9654;</button>
+        </div>
+        <div className="player-right">
+          {song && (
+            <button
+              className={`heart-btn ${p.isLiked ? 'liked' : ''}`}
+              onClick={(e) => { e.stopPropagation(); song && p.toggleLike(song.song_id); }}
+              title={p.isLiked ? '取消红心' : '红心'}
+            >
+              {p.isLiked ? '♥' : '♡'}
+            </button>
+          )}
+          <span className="vol-label">VOL</span>
+          <div className="vol-track" onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            p.setVolume((e.clientX - r.left) / r.width);
+          }}>
+            <div className="vol-fill" style={{ width: `${p.volume * 100}%` }} />
+          </div>
         </div>
       </div>
 
@@ -267,19 +287,16 @@ export default function HomePage() {
         </div>
 
         <div className="chat-input-bar">
-          <div className="chat-tags">
-            <button key={AIDJ_TAG} className="chip aidj" onClick={() => c.sendAidj('来点音乐')} disabled={c.isStreaming} style={{ background: 'rgba(255,255,255,0.12)' }}>{AIDJ_TAG}</button>
-            {TAGS.map((t) => (
-              <button key={t} className="chip" onClick={() => c.sendMessage(t)} disabled={c.isStreaming}>{t}</button>
-            ))}
-          </div>
           <div className="chat-input-row">
+            <button className="btn-aidj" onClick={() => c.sendAidj('来点音乐')} disabled={c.isStreaming}>
+              AIDJ
+            </button>
             <input className="chat-input" placeholder={listening ? 'Listening...' : 'Say something to the DJ...'}
               value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } }}
               disabled={c.isStreaming || listening} />
             <button className={`btn-mic ${listening ? 'btn-mic--active' : ''}`} onClick={toggleVoice} type="button">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
                 <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
                 <line x1="12" y1="19" x2="12" y2="22"/>
@@ -295,6 +312,7 @@ export default function HomePage() {
         <span>CLAUDIO FM</span>
         <span>CONNECTED</span>
       </div>
+
     </>
   );
 }

@@ -19,4 +19,17 @@ export function registerPlaylistRoutes(app: FastifyInstance) {
     }
     return { imported: ncmPlaylists.length, playlists: ncmPlaylists };
   });
+
+  // Get songs from a specific playlist
+  app.get('/api/playlist/:id/tracks', async (req) => {
+    const { id } = req.params as { id: string };
+    const songs = await ncmService.getPlaylistTracks(id, 50);
+    return { songs };
+  });
+
+  // Daily recommended songs
+  app.get('/api/recommend/daily', async () => {
+    const songs = await ncmService.getDailyRecommend();
+    return { songs };
+  });
 }
