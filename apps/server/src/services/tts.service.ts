@@ -76,7 +76,7 @@ export const ttsService = {
     }
 
     // Try providers in order
-    for (const [name, fn] of [['MiMo', tryMimo], ['Fish', tryFish]] as const) {
+    for (const [name, fn] of [['Fish', tryFish], ['MiMo', tryMimo]] as const) {
       const buffer = await fn(text);
       if (buffer && buffer.length > 100) {
         fs.writeFileSync(cachedFile, buffer);

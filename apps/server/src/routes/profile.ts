@@ -8,6 +8,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_DIR = path.join(__dirname, '..', '..', '..', '..', 'user');
 
 export function registerProfileRoutes(app: FastifyInstance) {
+  // Record a play when a song starts
+  app.post('/api/plays', async (req) => {
+    const { songId, songName, artist } = req.body as { songId: string; songName: string; artist?: string };
+    if (!songId || !songName) return { ok: false };
+    await playsRepo.insert({ song_id: songId, song_name: songName, artist });
+    return { ok: true };
+  });
+
   app.get('/api/profile', async () => {
     const stats = await playsRepo.getStats();
     return stats;

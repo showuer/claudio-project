@@ -17,6 +17,12 @@
 - 爵士嘻哈：Nujabes
 - K-Pop：NewJeans
 
+
+- 曾沛慈
+
+- Gael Garcia Bernal
+
+- 星野源
 ## 语言偏好
 - 日语/中文 > 英文 > 韩语
 

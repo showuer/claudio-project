@@ -135,9 +135,21 @@ export function registerChatRoutes(app: FastifyInstance) {
       const songs = output.songs || output.play?.map(s => ({ ...s, intro: '' })) || [];
       const hasSongs = songs.length > 0;
 
-      // TTS for DJ reply
-      const ttsResult = await ttsService.synthesize(output.say);
+      // TTS for DJ opening + per-song intros in parallel
+      const introTasks = songs
+        .filter(s => s.intro && s.intro.trim())
+        .map(async (s) => {
+          const result = await ttsService.synthesize(s.intro!);
+          return { id: s.id, url: result.audioUrl };
+        });
+      const [ttsResult, ...introResults] = await Promise.all([
+        ttsService.synthesize(output.say),
+        ...introTasks,
+      ]);
       const songIntros: Record<string, string> = {};
+      for (const r of introResults) {
+        if (r.url) songIntros[r.id] = r.url;
+      }
 
       // Save detected mood
       if ((output as any).mood && typeof (output as any).mood === 'string') {
@@ -184,11 +196,14 @@ export function registerChatRoutes(app: FastifyInstance) {
       const fmSongs = await ncmService.getPersonalFm();
       const songList = fmSongs.length > 0 ? fmSongs : [];
 
-      // 2. DeepSeek opening monologue
+      // 2. DeepSeek opening monologue + per-song intros
       const ctx = await contextService.assembleContext(userInput);
+      const songInfoStr = songList.length > 0
+        ? songList.map((s, i) => `${i + 1}. [${s.id}] ${s.name} - ${s.artist || '未知'}`).join('\n')
+        : '暂无歌曲';
       const openingPrompt = [
         { role: 'system' as const, content: ctx.systemPrompt },
-        { role: 'user' as const, content: `用户说: ${userInput}\n\n请写开场白，返回JSON: {"theme":"主题","say":"80-150字开场白"}` },
+        { role: 'user' as const, content: `用户说: ${userInput}\n\n接下来要播放的歌曲:\n${songInfoStr}\n\n请为这批歌曲写开场白和每首歌的简短介绍。返回JSON:\n{"theme":"主题","say":"60-120字开场白,必须提到下面这些歌","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手","intro":"15-25字,结合用户心情介绍这首歌"}]}` },
       ];
 
       let fullOutput = '';
@@ -197,8 +212,8 @@ export function registerChatRoutes(app: FastifyInstance) {
         reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
       }
 
-      // Parse opening
-      let opening: { theme?: string; say: string } = { say: '来听歌吧。' };
+      // Parse opening + song intros
+      let opening: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string; intro: string }> } = { say: '来听歌吧。' };
       try {
         opening = JSON.parse(fullOutput);
       } catch {
@@ -206,12 +221,33 @@ export function registerChatRoutes(app: FastifyInstance) {
         opening = match ? JSON.parse(match[0]) : { say: fullOutput.trim() || '来听歌吧。' };
       }
 
-      // 3. TTS for opening
-      const ttsResult = await ttsService.synthesize(opening.say);
+      // Merge DeepSeek intros with NCM songs
+      const aiSongs = opening.songs || [];
+      const aiIntroMap: Record<string, string> = {};
+      for (const s of aiSongs) {
+        if (s.intro) aiIntroMap[s.id] = s.intro;
+      }
 
       const songs = songList.map((s) => ({
-        id: s.id, name: s.name, artist: s.artist, intro: '',
+        id: s.id, name: s.name, artist: s.artist,
+        intro: aiIntroMap[s.id] || '',
       }));
+
+      // TTS for opening + per-song intros in parallel
+      const introTasks = songs
+        .filter(s => s.intro && s.intro.trim())
+        .map(async (s) => {
+          const result = await ttsService.synthesize(s.intro!);
+          return { id: s.id, url: result.audioUrl };
+        });
+      const [ttsResult, ...introResults] = await Promise.all([
+        ttsService.synthesize(opening.say),
+        ...introTasks,
+      ]);
+      const songIntros: Record<string, string> = {};
+      for (const r of introResults) {
+        if (r.url) songIntros[r.id] = r.url;
+      }
 
       reply.raw.write(`data: ${JSON.stringify({
         done: true,
@@ -219,8 +255,8 @@ export function registerChatRoutes(app: FastifyInstance) {
         say: opening.say,
         ttsUrl: ttsResult.audioUrl,
         theme: opening.theme || '私人漫游',
-        songs,
-        songIntros: {},
+        songs: songs.map(s => ({ id: s.id, name: s.name, artist: s.artist, intro: s.intro || '' })),
+        songIntros,
         source: 'aidj',
       })}\n\n`);
     } catch (err: any) {

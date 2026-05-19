@@ -30,6 +30,11 @@ export async function getDb(): Promise<Database> {
   return db;
 }
 
+export function getDbSync(): Database {
+  if (!db) throw new Error('DB not initialized. Call getDb() first.');
+  return db;
+}
+
 export function saveDb() {
   if (!db) return;
   const data = db.export();
