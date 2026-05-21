@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { weatherService } from './weather.service.js';
 import { playsRepo } from '../db/plays.repo.js';
 import { queueRepo } from '../db/queue.repo.js';
+import { memoryService, type MemoryMode } from './memory.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_DIR = path.join(__dirname, '..', '..', '..', '..', 'user');
@@ -33,10 +34,8 @@ export const contextService = {
     }
   },
 
-  async assembleContext(userMessage: string) {
-    const taste = readFileSafe(path.join(USER_DIR, 'taste.md'), '# 音乐品味\n- 喜欢各种好听的音乐');
-    const routines = readFileSafe(path.join(USER_DIR, 'routines.md'), '# 作息\n- 全天喜欢听歌');
-
+  async assembleContext(userMessage: string, mode: MemoryMode = 'chat') {
+    const memoryProfile = await memoryService.getPromptMemory(userMessage, mode);
     const weather = await weatherService.getCurrent();
     const weatherStr = weatherService.formatNatural(weather);
 
@@ -52,15 +51,14 @@ export const contextService = {
 
     const systemPrompt = readFileSafe(
       path.join(__dirname, '..', 'prompts', 'system.md'),
-      '你是一个私人电台 DJ，叫 Claudio。根据天气、时间、用户品味从候选歌曲中选歌并为每首歌写串词。输出 JSON：{"say":"...","play":[{"id":"...","name":"...","artist":"..."}],"segue":"..."}'
+      '你是 Claudio。{{memoryProfile}}'
     );
 
     const fullSystem = `${systemPrompt}
 
 ## Current playback rule
 When recommending songs, write one continuous playlist opening in "say" only. Do not write per-song intros. Return songs as metadata only: id, name, artist. The opening should feel like one connected FM monologue, with each sentence flowing into the next.`
-      .replace('{{taste}}', taste)
-      .replace('{{routines}}', routines)
+      .replace('{{memoryProfile}}', memoryProfile)
       .replace('{{weather}}', weatherStr)
       .replace('{{time}}', timeStr)
       .replace('{{recentPlays}}', recentStr)
