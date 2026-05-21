@@ -23,6 +23,28 @@
 - Gael Garcia Bernal
 
 - 星野源
+
+- 方大同, 薛凯琪
+
+- やなぎなぎ
+
+- Kendrick Lamar, Jay Rock
+
+- Drake, Future
+
+- 国蛋
+
+- 郭静
+
+- 西原健一郎
+
+- Ledisi
+
+- 孙燕姿
+
+- 蔡依林
+
+- 陈嘉唯
 ## 语言偏好
 - 日语/中文 > 英文 > 韩语
 

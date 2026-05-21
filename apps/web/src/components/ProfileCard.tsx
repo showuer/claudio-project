@@ -192,7 +192,6 @@ export function ProfileCard({ open, onToggle }: Props) {
                 </span>
                 <div>
                   <strong>CLAUDIO</strong>
-                  <p>{profile?.copy || 'Your private AI DJ'}</p>
                 </div>
               </div>
               <div className="profile-card-stats">

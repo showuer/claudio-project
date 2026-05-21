@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { OutgoingHttpHeaders } from 'node:http';
 import { ncmService } from '../services/ncm.service.js';
 
 export function registerStreamRoutes(app: FastifyInstance) {
@@ -30,6 +31,8 @@ export function registerStreamRoutes(app: FastifyInstance) {
       const cr = resp.headers.get('content-range');
       const acr = resp.headers.get('accept-ranges');
 
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Cache-Control', 'private, max-age=120');
       reply.header('Content-Type', ct);
       reply.header('Accept-Ranges', acr || 'bytes');
       if (cl) reply.header('Content-Length', cl);
@@ -38,7 +41,7 @@ export function registerStreamRoutes(app: FastifyInstance) {
       // Stream the response body
       const reader = resp.body.getReader();
       reply.hijack();
-      reply.raw.writeHead(status, reply.getHeaders());
+      reply.raw.writeHead(status, reply.getHeaders() as OutgoingHttpHeaders);
 
       const pump = async () => {
         try {

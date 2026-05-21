@@ -9,6 +9,20 @@ let introAudio: HTMLAudioElement | null = null;
 let progressTimer = 0;
 let errorCount = 0;
 let fadeInterval: ReturnType<typeof setInterval> | null = null;
+let playbackSession = 0;
+let narrationSession = 0;
+let narrationTimer: ReturnType<typeof setInterval> | null = null;
+let narrationAudio: HTMLAudioElement | null = null;
+let pendingPlaylistIntroUrl = '';
+let pendingPlaylistStartIndex = -1;
+
+function getMusicStreamUrl(songId: string) {
+  return `/api/stream/${encodeURIComponent(songId)}`;
+}
+
+function withoutSongIntro(song: Song): Song {
+  return { ...song, intro: '', introUrl: '' };
+}
 
 function fadeMusicTo(target: number, durationMs: number, onDone?: () => void) {
   if (!audio) return;
@@ -37,15 +51,11 @@ function fadeMusicTo(target: number, durationMs: number, onDone?: () => void) {
 function ensureAudio() {
   if (!audio) {
     audio = new Audio();
-    audio.volume = 0.7;
+    audio.crossOrigin = 'anonymous';
+    audio.volume = 0.72;
     audio.addEventListener('error', () => {
       errorCount++;
-      if (errorCount <= 1) {
-        // Try next track on first error, but don't loop infinitely
-        usePlayerStore.getState().nextTrack();
-      } else {
-        usePlayerStore.setState({ musicPlaying: false, djNarrating: false });
-      }
+      usePlayerStore.setState({ musicPlaying: false });
     });
     audio.addEventListener('ended', () => {
       usePlayerStore.getState().nextTrack();
@@ -53,9 +63,52 @@ function ensureAudio() {
   }
   if (!introAudio) {
     introAudio = new Audio();
+    introAudio.crossOrigin = 'anonymous';
     introAudio.volume = 1;
   }
   return { audio, introAudio };
+}
+
+export function getMusicAudioElement(): HTMLAudioElement | null {
+  return ensureAudio().audio;
+}
+
+export function getNarrationAudioElement(): HTMLAudioElement | null {
+  return narrationAudio;
+}
+
+function stopNarrationAudio(clearState = true) {
+  narrationSession++;
+  if (narrationTimer) {
+    clearInterval(narrationTimer);
+    narrationTimer = null;
+  }
+  if (narrationAudio) {
+    narrationAudio.pause();
+    narrationAudio.src = '';
+    if (clearState) narrationAudio = null;
+  }
+  if (clearState) {
+    usePlayerStore.setState({
+      narrationUrl: '',
+      narrationTimeMs: 0,
+      narrationDurationMs: 0,
+      narrationPlaying: false,
+      djNarrating: false,
+    });
+  }
+}
+
+function startNarrationClock(session: number) {
+  if (narrationTimer) clearInterval(narrationTimer);
+  narrationTimer = setInterval(() => {
+    if (session !== narrationSession || !narrationAudio) return;
+    usePlayerStore.setState({
+      narrationTimeMs: (narrationAudio.currentTime || 0) * 1000,
+      narrationDurationMs: (narrationAudio.duration || 0) * 1000,
+      narrationPlaying: !narrationAudio.paused,
+    });
+  }, 100);
 }
 
 function startProgress() {
@@ -70,8 +123,6 @@ function startProgress() {
   }, 250);
 }
 
-let narrationAudio: HTMLAudioElement | null = null;
-
 interface PlayerState {
   playlist: Song[];
   currentIndex: number;
@@ -83,15 +134,23 @@ interface PlayerState {
   lyricLrc: string;
   lyricKlyric: string;
   isLiked: boolean;
+  narrationUrl: string;
+  narrationTimeMs: number;
+  narrationDurationMs: number;
+  narrationPlaying: boolean;
 
   setPlaylist: (s: Song[]) => void;
-  playTrack: (i: number) => void;
+  queuePlaylist: (s: Song[], narrationUrl?: string) => void;
+  playTrack: (i: number, options?: { skipIntro?: boolean; keepNarration?: boolean }) => void;
   toggleMusic: () => void;
   nextTrack: () => void;
   prevTrack: () => void;
   seekTo: (pct: number) => void;
   setVolume: (v: number) => void;
+  preparePlayback: () => void;
   playNarrationThenMusic: (narrationUrl: string, startIndex?: number) => void;
+  toggleNarration: () => void;
+  stopNarration: () => void;
   fetchLyric: (songId: string) => Promise<void>;
   fetchLikeStatus: (songId: string) => Promise<void>;
   toggleLike: (songId: string) => Promise<void>;
@@ -107,10 +166,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   progressMs: 0,
   durationMs: 240000,
   djNarrating: false,
-  volume: 0.7,
+  volume: 0.72,
   lyricLrc: '',
   lyricKlyric: '',
   isLiked: false,
+  narrationUrl: '',
+  narrationTimeMs: 0,
+  narrationDurationMs: 0,
+  narrationPlaying: false,
 
   init: () => {
     ensureAudio();
@@ -118,23 +181,54 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   setPlaylist: (songs) => {
-    set({ playlist: songs, currentIndex: 0, musicPlaying: false, progressMs: 0 });
-    localStorage.setItem(STORAGE, JSON.stringify({ playlist: songs, currentIndex: 0 }));
+    const nextSongs = songs.map(withoutSongIntro);
+    pendingPlaylistIntroUrl = '';
+    pendingPlaylistStartIndex = -1;
+    set({ playlist: nextSongs, currentIndex: 0, musicPlaying: false, progressMs: 0 });
+    localStorage.setItem(STORAGE, JSON.stringify({ playlist: nextSongs, currentIndex: 0 }));
   },
 
-  playTrack: (i) => {
+  queuePlaylist: (songs, narrationUrl = '') => {
+    const { playlist, currentIndex } = get();
+    const currentSong = playlist[currentIndex];
+    const nextSongs = songs.map(withoutSongIntro);
+    const isCurrentSongPlaying = !!currentSong && !!audio && !audio.paused;
+
+    if (isCurrentSongPlaying) {
+      const merged = [withoutSongIntro(currentSong), ...nextSongs.filter((song) => song.song_id !== currentSong.song_id)];
+      pendingPlaylistIntroUrl = narrationUrl;
+      pendingPlaylistStartIndex = merged.length > 1 ? 1 : -1;
+      set({ playlist: merged, currentIndex: 0 });
+      localStorage.setItem(STORAGE, JSON.stringify({ playlist: merged, currentIndex: 0 }));
+      return;
+    }
+
+    get().setPlaylist(nextSongs);
+    if (!nextSongs.length) return;
+    if (narrationUrl) {
+      get().playNarrationThenMusic(narrationUrl, 0);
+    } else {
+      get().playTrack(0);
+    }
+  },
+
+  playTrack: (i, options = {}) => {
     const { playlist, volume } = get();
     if (i < 0 || i >= playlist.length) return;
+    const session = ++playbackSession;
     const song = playlist[i];
-    const a = ensureAudio().audio!;
+    const { audio: a, introAudio: ia } = ensureAudio();
     a.volume = volume;
     a.pause();
+    if (!options.keepNarration) stopNarrationAudio();
+    ia.pause();
+    ia.src = '';
+    ia.onended = null;
+    ia.onerror = null;
 
     errorCount = 0;
     set({ currentIndex: i, musicPlaying: false, progressMs: 0 });
     localStorage.setItem(STORAGE, JSON.stringify({ playlist, currentIndex: i }));
-
-    const ducked = volume * 0.2;
 
     const trackPlay = () => {
       fetch('/api/plays', {
@@ -145,62 +239,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     };
 
     const playSong = async () => {
-      try {
-        const resp = await fetch(`/api/player/url/${song.song_id}`);
-        const { url } = await resp.json();
-        a.src = url || `/api/stream/${song.song_id}`;
-      } catch {
-        a.src = `/api/stream/${song.song_id}`;
-      }
+      if (session !== playbackSession) return;
+      const url = getMusicStreamUrl(song.song_id);
+      a.src = url;
       a.play().catch(() => {});
       set({ musicPlaying: true, djNarrating: false });
       trackPlay();
     };
 
-    if (song.introUrl) {
-      const ia = ensureAudio().introAudio!;
-      ia.pause();
-      set({ djNarrating: true });
-      ia.src = song.introUrl;
-
-      let introDone = false;
-      let musicReady = false;
-
-      // Fetch and start music immediately at ducked volume during intro
-      const loadAndPlay = async () => {
-        try {
-          const resp = await fetch(`/api/player/url/${song.song_id}`);
-          const { url } = await resp.json();
-          a.src = url || `/api/stream/${song.song_id}`;
-        } catch {
-          a.src = `/api/stream/${song.song_id}`;
-        }
-        musicReady = true;
-        if (!introDone) {
-          a.volume = 0;
-          a.play().catch(() => {});
-          fadeMusicTo(ducked, 500);
-          set({ musicPlaying: true });
-          trackPlay();
-        }
-      };
-
-      const onIntroDone = () => {
-        introDone = true;
-        if (musicReady) {
-          fadeMusicTo(volume, 3000, () => set({ djNarrating: false }));
-        } else {
-          playSong();
-        }
-      };
-
-      ia.onended = onIntroDone;
-      ia.onerror = onIntroDone;
-      ia.play().catch(onIntroDone);
-      loadAndPlay();
-    } else {
-      playSong();
-    }
+    playSong();
   },
 
   toggleMusic: () => {
@@ -212,6 +259,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   nextTrack: () => {
     const { playlist, currentIndex } = get();
     if (playlist.length <= 1) return;
+    if (pendingPlaylistStartIndex >= 0) {
+      const startIndex = pendingPlaylistStartIndex;
+      const introUrl = pendingPlaylistIntroUrl;
+      pendingPlaylistIntroUrl = '';
+      pendingPlaylistStartIndex = -1;
+      if (introUrl) {
+        get().playNarrationThenMusic(introUrl, startIndex);
+      } else {
+        get().playTrack(startIndex);
+      }
+      return;
+    }
     get().playTrack((currentIndex + 1) % playlist.length);
   },
 
@@ -224,35 +283,45 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   seekTo: (pct) => { if (audio && audio.duration) audio.currentTime = pct * audio.duration; },
   setVolume: (v) => { set({ volume: v }); if (audio) audio.volume = v; },
 
+  preparePlayback: () => {
+    const { audio: a, introAudio: ia } = ensureAudio();
+    a.load();
+    ia.load();
+    if (!narrationAudio) {
+      narrationAudio = new Audio();
+      narrationAudio.volume = 1;
+    }
+    narrationAudio.load();
+  },
+
   playNarrationThenMusic: (narrationUrl: string, startIndex?: number) => {
     const savedVolume = get().volume;
-    if (narrationAudio) {
-      narrationAudio.pause();
-      narrationAudio.src = '';
+    const { introAudio: ia } = ensureAudio();
+    ia.pause();
+    ia.src = '';
+    ia.onended = null;
+    ia.onerror = null;
+
+    if (narrationAudio && narrationAudio.src.endsWith(narrationUrl) && !narrationAudio.paused) {
+      return;
     }
-    narrationAudio = new Audio(narrationUrl);
+    stopNarrationAudio(false);
+    narrationAudio = narrationAudio || new Audio();
+    narrationAudio.src = narrationUrl;
     narrationAudio.volume = 1;
+    const session = ++narrationSession;
 
     let crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
     let musicStarted = false;
 
-    const duckRatio = 0.2;
+    const duckRatio = 0.05;
     const duckedVolume = savedVolume * duckRatio;
 
     // Start music 7s before narration ends at volume 0, fade up to ducked volume while narrating
     const startMusicCrossfade = () => {
       if (musicStarted || startIndex === undefined) return;
       musicStarted = true;
-      // Opening narration serves as intro for the first track — skip per-song intro
-      const firstSong = get().playlist[startIndex];
-      const savedIntro = firstSong?.introUrl;
-      if (firstSong && savedIntro) {
-        firstSong.introUrl = '';
-      }
-      get().playTrack(startIndex);
-      if (firstSong && savedIntro) {
-        firstSong.introUrl = savedIntro;
-      }
+      get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
       if (audio) {
         audio.volume = 0;
         fadeMusicTo(duckedVolume, 3000);
@@ -260,7 +329,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     };
 
     narrationAudio.onloadedmetadata = () => {
+      if (session !== narrationSession) return;
       const dur = narrationAudio?.duration || 0;
+      set({ narrationDurationMs: dur * 1000 });
       if (dur > 10 && startIndex !== undefined) {
         const delay = Math.max(0, (dur - 7) * 1000);
         crossfadeTimer = setTimeout(startMusicCrossfade, delay);
@@ -268,62 +339,83 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     };
 
     narrationAudio.onended = () => {
+      if (session !== narrationSession) return;
       if (crossfadeTimer) clearTimeout(crossfadeTimer);
+      if (narrationTimer) {
+        clearInterval(narrationTimer);
+        narrationTimer = null;
+      }
       narrationAudio = null;
       if (!musicStarted && startIndex !== undefined) {
         // Narration too short — start music directly, opening is the intro
         musicStarted = true;
-        const firstSong = get().playlist[startIndex];
-        const savedIntro = firstSong?.introUrl;
-        if (firstSong && savedIntro) firstSong.introUrl = '';
-        get().playTrack(startIndex);
-        if (firstSong && savedIntro) firstSong.introUrl = savedIntro;
+        get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
         if (audio) {
           audio.volume = 0;
-          fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false }));
+          fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
         } else {
-          set({ djNarrating: false });
+          set({ djNarrating: false, narrationPlaying: false });
         }
       } else if (musicStarted && audio) {
         // Music is at ducked volume — fade up to full
-        fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false }));
+        fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
+      } else if (audio && !audio.paused) {
+        fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
       } else {
-        set({ djNarrating: false });
+        set({ djNarrating: false, narrationPlaying: false });
       }
     };
     narrationAudio.onerror = () => {
+      if (session !== narrationSession) return;
       if (crossfadeTimer) clearTimeout(crossfadeTimer);
+      if (narrationTimer) {
+        clearInterval(narrationTimer);
+        narrationTimer = null;
+      }
       narrationAudio = null;
       if (!musicStarted && startIndex !== undefined) {
         musicStarted = true;
-        const firstSong = get().playlist[startIndex];
-        const savedIntro = firstSong?.introUrl;
-        if (firstSong && savedIntro) firstSong.introUrl = '';
-        get().playTrack(startIndex);
-        if (firstSong && savedIntro) firstSong.introUrl = savedIntro;
+        get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
         if (audio) {
           audio.volume = 0;
-          fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false }));
+          fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
         } else {
-          set({ djNarrating: false });
+          set({ djNarrating: false, narrationPlaying: false });
         }
       } else if (musicStarted && audio) {
-        fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false }));
+        fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
+      } else if (audio && !audio.paused) {
+        fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
       } else {
-        set({ djNarrating: false });
+        set({ djNarrating: false, narrationPlaying: false });
       }
     };
 
-    set({ djNarrating: true });
+    set({ djNarrating: true, narrationUrl, narrationTimeMs: 0, narrationDurationMs: 0, narrationPlaying: true });
+    startNarrationClock(session);
     // Duck currently playing music immediately when narration starts
-    if (audio && !audio.paused && startIndex !== undefined) {
+    if (audio && !audio.paused) {
       fadeMusicTo(duckedVolume, 500);
     }
     narrationAudio.play().catch(() => {
-      set({ djNarrating: false });
-      if (startIndex !== undefined) get().playTrack(startIndex);
+      if (session !== narrationSession) return;
+      set({ djNarrating: false, narrationPlaying: false });
+      if (startIndex !== undefined) get().playTrack(startIndex, { skipIntro: true });
     });
   },
+
+  toggleNarration: () => {
+    if (!narrationAudio) return;
+    if (narrationAudio.paused) {
+      narrationAudio.play().catch(() => {});
+      set({ narrationPlaying: true, djNarrating: true });
+    } else {
+      narrationAudio.pause();
+      set({ narrationPlaying: false });
+    }
+  },
+
+  stopNarration: () => stopNarrationAudio(),
 
   fetchLyric: async (songId) => {
     try {

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { usePlayerStore, Song } from '../stores/playerStore';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { getMusicAudioElement, usePlayerStore, Song } from '../stores/playerStore';
 import { useChatStore } from '../stores/chatStore';
 import { wsClient } from '../api/ws';
 import { DotMatrixClock } from '../components/DotMatrixDisplay';
@@ -7,6 +7,325 @@ import { ProfileCard } from '../components/ProfileCard';
 
 const AI_AVATAR = '/avatars/claude.png';
 const USER_AVATAR = '/avatars/me.png';
+
+type AlignmentSegment = { text: string; start: number; end: number };
+type NarrationMessage = {
+  id: string;
+  content: string;
+  ttsUrl?: string;
+  alignment?: { segments: AlignmentSegment[] };
+};
+
+function formatTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+
+function splitNarrationSentences(text: string): string[] {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const sentences = clean
+    .split(/(?<=[。！？.!?；;])\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (sentences.length > 1) return sentences;
+  const chunks = clean.match(/.{1,34}(?:\s|$)/g)?.map((part) => part.trim()).filter(Boolean) || [];
+  return chunks.length ? chunks : [clean];
+}
+
+function segmentWeight(text: string): number {
+  const chars = text.match(/[\u3400-\u9fff]|[A-Za-z0-9]+/g)?.length || text.length;
+  return Math.max(chars, 6);
+}
+
+function buildSentenceSegments(text: string, targetDuration = 0): AlignmentSegment[] {
+  const sentences = splitNarrationSentences(text);
+  const totalWeight = sentences.reduce((sum, sentence) => sum + segmentWeight(sentence), 0) || 1;
+  const duration = Math.max(targetDuration, totalWeight * 0.18, 1);
+  let cursor = 0;
+  return sentences.map((sentence, i) => {
+    const isLast = i === sentences.length - 1;
+    const length = isLast ? duration - cursor : duration * (segmentWeight(sentence) / totalWeight);
+    const start = cursor;
+    const end = isLast ? duration : cursor + length;
+    cursor = end;
+    return {
+      text: sentence,
+      start: Math.round(start * 1000) / 1000,
+      end: Math.round(end * 1000) / 1000,
+    };
+  });
+}
+
+function alignmentLooksSentenceLevel(aligned: AlignmentSegment[]): boolean {
+  if (!aligned.length) return false;
+  const averageLength = aligned.reduce((sum, segment) => sum + segment.text.length, 0) / aligned.length;
+  return averageLength >= 10 || aligned.some((segment) => /[。！？.!?；;]/.test(segment.text));
+}
+
+function fitSegmentsToDuration(
+  aligned: AlignmentSegment[],
+  fallbackText: string,
+  targetDuration: number,
+): AlignmentSegment[] {
+  const source = alignmentLooksSentenceLevel(aligned)
+    ? aligned
+    : buildSentenceSegments(fallbackText, targetDuration);
+  const lastEnd = source.reduce((max, segment) => Math.max(max, segment.end), 0);
+  if (!targetDuration || !lastEnd) return source;
+  const scale = targetDuration / lastEnd;
+  if (Math.abs(1 - scale) < 0.03) return source;
+  return source.map((segment) => ({
+    ...segment,
+    start: Math.round(segment.start * scale * 1000) / 1000,
+    end: Math.round(segment.end * scale * 1000) / 1000,
+  }));
+}
+
+function buildFallbackSegments(text: string, targetDuration = 0): AlignmentSegment[] {
+  return fitSegmentsToDuration([], text, targetDuration);
+}
+
+function SpeakingOverlay({
+  open,
+  narration,
+  song,
+  playlistCount,
+  musicPlaying,
+  musicProgressMs,
+  musicDurationMs,
+  narrationPlaying,
+  narrationTimeMs,
+  narrationDurationMs,
+  onToggleMusic,
+  onSeekMusic,
+  onToggleNarration,
+  onOpenProfile,
+  onClose,
+}: {
+  open: boolean;
+  narration: NarrationMessage | null;
+  song: Song | null;
+  playlistCount: number;
+  musicPlaying: boolean;
+  musicProgressMs: number;
+  musicDurationMs: number;
+  narrationPlaying: boolean;
+  narrationTimeMs: number;
+  narrationDurationMs: number;
+  onToggleMusic: () => void;
+  onSeekMusic: (pct: number) => void;
+  onToggleNarration: () => void;
+  onOpenProfile: () => void;
+  onClose: () => void;
+}) {
+  const heroCanvasRef = useRef<HTMLCanvasElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const musicStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const contextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const time = Math.max(0, narrationTimeMs / 1000);
+  const duration = Math.max(0, narrationDurationMs / 1000);
+  const narrationPct = narrationDurationMs > 0 ? Math.min(100, (narrationTimeMs / narrationDurationMs) * 100) : 0;
+  const statusText = narrationPlaying ? 'Speaking...' : musicPlaying ? 'Playing...' : 'Paused';
+
+  const segments = useMemo(() => {
+    const aligned = narration?.alignment?.segments || [];
+    const fallbackText = narration?.content || 'It is late on a Monday, and here is a song that moves with your breath. Back in 1971, David Gates picked up a nylon-string guitar and let every line end in a whisper. You will feel yourself lift off the ground a little.';
+    return fitSegmentsToDuration(aligned, fallbackText, duration);
+  }, [narration, duration]);
+  const activeIndex = segments.findIndex((s) => time >= s.start && time < s.end);
+  const currentIndex = activeIndex >= 0 && activeIndex < segments.length
+    ? activeIndex
+    : (time > 0 && segments.length ? segments.length - 1 : -1);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const disconnectMusicAnalyser = () => {
+      try { musicStreamSourceRef.current?.disconnect(); } catch { /* already disconnected */ }
+      musicStreamSourceRef.current = null;
+      analyserRef.current = null;
+    };
+
+    const setupAudio = () => {
+      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextCtor) return;
+      if (!contextRef.current) contextRef.current = new AudioContextCtor();
+      const ctx = contextRef.current;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const musicAudio = getMusicAudioElement();
+      disconnectMusicAnalyser();
+      if (musicAudio) {
+        try {
+          const streamFactory = (musicAudio as HTMLAudioElement & {
+            captureStream?: () => MediaStream;
+            mozCaptureStream?: () => MediaStream;
+          }).captureStream || (musicAudio as HTMLAudioElement & { mozCaptureStream?: () => MediaStream }).mozCaptureStream;
+          const stream = streamFactory?.call(musicAudio);
+          if (!stream) return;
+          analyserRef.current = ctx.createAnalyser();
+          analyserRef.current.fftSize = 512;
+          analyserRef.current.smoothingTimeConstant = 0.58;
+          musicStreamSourceRef.current = ctx.createMediaStreamSource(stream);
+          musicStreamSourceRef.current.connect(analyserRef.current);
+        } catch {
+          musicStreamSourceRef.current = null;
+          analyserRef.current = null;
+        }
+      }
+    };
+    setupAudio();
+    return disconnectMusicAnalyser;
+  }, [open, song?.song_id, musicPlaying]);
+
+  useEffect(() => {
+    if (!open) return;
+    let raf = 0;
+    const draw = () => {
+      const analyser = analyserRef.current;
+      const data = new Uint8Array(analyser?.frequencyBinCount || 128);
+      if (analyser) analyser.getByteFrequencyData(data);
+
+      const paint = (canvas: HTMLCanvasElement | null) => {
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        if (canvas.width !== Math.floor(rect.width * dpr)) {
+          canvas.width = Math.floor(rect.width * dpr);
+          canvas.height = Math.floor(rect.height * dpr);
+        }
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        const now = performance.now() / 1000;
+        const count = Math.max(72, Math.floor(rect.width / 5.4));
+        const groupCount = 24;
+        const groupEnergies = Array.from({ length: groupCount }, (_, groupIndex) => {
+          const start = Math.floor((groupIndex / groupCount) * data.length);
+          const end = Math.max(start + 1, Math.floor(((groupIndex + 1) / groupCount) * data.length));
+          let sum = 0;
+          for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
+            sum += data[sampleIndex] || 0;
+          }
+          const raw = analyser ? sum / Math.max(1, end - start) / 255 : 0;
+          return Math.min(1, Math.pow(raw, 0.62) * 1.85);
+        });
+        const baseLevel = musicPlaying ? 0.32 : 0.28;
+        const gap = rect.width / count;
+        const barW = Math.max(2, gap * 0.48);
+        for (let i = 0; i < count; i++) {
+          const position = (i / Math.max(1, count - 1)) * (groupCount - 1);
+          const leftGroup = Math.floor(position);
+          const rightGroup = Math.min(groupCount - 1, leftGroup + 1);
+          const mix = position - leftGroup;
+          const groupedEnergy = groupEnergies[leftGroup] * (1 - mix) + groupEnergies[rightGroup] * mix;
+          const phrase = Math.floor(i / 5);
+          const baseWave = 0.82 + Math.sin(phrase * 0.55 + now * 2.1) * 0.11;
+          const localWave = 0.94 + Math.sin(i * 0.18 + now * 1.35) * 0.055;
+          const shape = 0.45 + 0.55 * Math.pow(Math.sin((i / count) * Math.PI), 0.9);
+          const groupedPulse = 0.94 + Math.sin(Math.floor(i / 6) * 0.72 + now * 2.35) * 0.08;
+          const energy = Math.max(baseLevel, groupedEnergy) * baseWave * localWave * groupedPulse;
+          const h = Math.max(34, energy * rect.height * shape);
+          const x = i * gap;
+          const y = rect.height - h;
+          ctx.fillStyle = '#F9FAFB';
+          ctx.beginPath();
+          ctx.roundRect(x, y, barW, h, barW / 2);
+          ctx.fill();
+        }
+      };
+
+      paint(heroCanvasRef.current);
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [open, musicPlaying, time, duration]);
+
+  useEffect(() => {
+    if (!open || currentIndex < 0) return;
+    const transcript = transcriptRef.current;
+    const currentLine = transcript?.querySelector<HTMLElement>('.speaking-line.is-current');
+    if (!transcript || !currentLine) return;
+    const targetTop = currentLine.offsetTop - (transcript.clientHeight / 2) + (currentLine.clientHeight / 2);
+    transcript.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth',
+    });
+  }, [open, currentIndex]);
+
+  if (!open) return null;
+
+  const title = song?.song_name || 'mmguo 的\n试播集';
+  const artist = song?.artist || '如果 —— 面包';
+  const musicSeconds = Math.max(0, musicProgressMs / 1000);
+  const musicDurationSeconds = Math.max(0, musicDurationMs / 1000);
+  const musicPct = musicDurationMs > 0 ? Math.min(100, (musicProgressMs / musicDurationMs) * 100) : 0;
+
+  const close = () => {
+    onClose();
+  };
+
+  return (
+    <div className="speaking-overlay" role="dialog" aria-modal="true">
+      <div className="speaking-shell">
+        <section className="speaking-hero">
+          <div className="speaking-topline">
+            <div className="speaking-identity">
+              <button className="speaking-avatar-button" onClick={onOpenProfile} aria-label="Open Claudio profile">
+                <img src={AI_AVATAR} alt="" />
+              </button>
+              <div>
+                <div className="speaking-name">Claudio</div>
+                <div className="speaking-status"><span />{statusText}</div>
+              </div>
+            </div>
+            <div className="speaking-clock">{formatTime(time)}</div>
+            <button className="speaking-close" onClick={close} aria-label="Close">×</button>
+          </div>
+          <canvas ref={heroCanvasRef} className="speaking-spectrum" />
+        </section>
+
+        <section className="speaking-card">
+          <div className="speaking-meta">
+            <div>
+              <h1>{title}</h1>
+              <p>{artist}</p>
+            </div>
+            <span className="speaking-link">QUEUE • {playlistCount} TRACKS</span>
+          </div>
+          <div className="speaking-progress">
+            <button onClick={onToggleMusic}>{musicPlaying ? 'Ⅱ' : '▶'}</button>
+            <div className="speaking-track" onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              onSeekMusic((e.clientX - r.left) / r.width);
+            }}>
+              <span style={{ width: `${musicPct}%` }} />
+            </div>
+            <time>{formatTime(musicSeconds)} / {formatTime(musicDurationSeconds || 0)}</time>
+          </div>
+
+          <div className="speaking-transcript" ref={transcriptRef}>
+            {segments.map((segment, i) => (
+              <div key={`${segment.start}-${segment.text}-${i}`} className={`speaking-line ${i < currentIndex ? 'is-read' : i === currentIndex ? 'is-current' : 'is-future'}`}>
+                <div className="speaking-line-meta">Claudio • {formatTime(segment.start)}</div>
+                <p>{segment.text}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="speaking-footer">
+            <time>{formatTime(time)}</time>
+            <div className="speaking-tts-track"><span style={{ width: `${narrationPct}%` }} /></div>
+            <button onClick={onToggleNarration}>{narrationPlaying ? 'Ⅱ' : '▶'}</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
 
 export default function HomePage() {
   const p = usePlayerStore((s) => s);
@@ -16,9 +335,11 @@ export default function HomePage() {
   const [time, setTime] = useState(new Date());
   const [queueOpen, setQueueOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [speakingOpen, setSpeakingOpen] = useState(false);
   const [imgErr, setImgErr] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const speakingSessionRef = useRef({ narrationId: '', sawPlaying: false });
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('claudio-theme');
     return saved === 'light' ? 'light' : 'dark';
@@ -39,33 +360,21 @@ export default function HomePage() {
     wsClient.on('dj_message', (data: any) => {
       c.addMessage({
         id: data.id || (() => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36)+Math.random().toString(36).slice(2); } })(), role: 'dj', content: data.say,
-        ttsUrl: data.ttsUrl, status: 'done', played: false, timestamp: new Date().toISOString(),
+        ttsUrl: data.ttsUrl, alignment: data.alignment, status: 'done', played: false, timestamp: new Date().toISOString(),
       });
 
       if (data.songs?.length) {
         const songs = data.songs.map((s: any) => ({
           song_id: s.id, song_name: s.name, artist: s.artist,
-          intro: s.intro || '', introUrl: data.songIntros?.[s.id] || '',
         }));
-        p.setPlaylist(songs);
+        p.queuePlaylist(songs, data.ttsUrl || '');
         setQueueOpen(true);
-
-        if (data.ttsUrl) {
-          p.playNarrationThenMusic(data.ttsUrl, 0);
-        } else {
-          p.playTrack(0);
-        }
       }
       else if (data.play?.length) {
-        p.setPlaylist(data.play.map((s: any) => ({
+        p.queuePlaylist(data.play.map((s: any) => ({
           song_id: s.id, song_name: s.name, artist: s.artist,
-        })));
+        })), data.ttsUrl || '');
         setQueueOpen(true);
-        if (data.ttsUrl) {
-          p.playNarrationThenMusic(data.ttsUrl, 0);
-        } else {
-          p.playTrack(0);
-        }
       }
     });
     return () => { wsClient.disconnect(); window.speechSynthesis.cancel(); };
@@ -111,8 +420,33 @@ export default function HomePage() {
 
   const song = p.playlist.length && p.currentIndex >= 0 && p.currentIndex < p.playlist.length
     ? p.playlist[p.currentIndex] : null;
+  const latestNarration = useMemo(() => {
+    const msg = [...c.messages].reverse().find((m: any) => m.role === 'dj' && m.ttsUrl && m.status === 'done');
+    return (msg || null) as NarrationMessage | null;
+  }, [c.messages]);
   const active = p.musicPlaying || p.djNarrating;
   const pct = p.durationMs > 0 ? (p.progressMs / p.durationMs) * 100 : 0;
+
+  useEffect(() => {
+    if (!speakingOpen) {
+      speakingSessionRef.current = { narrationId: '', sawPlaying: false };
+      return;
+    }
+    const narrationId = latestNarration?.id || '';
+    if (speakingSessionRef.current.narrationId !== narrationId) {
+      speakingSessionRef.current = { narrationId, sawPlaying: p.narrationPlaying };
+    } else if (p.narrationPlaying) {
+      speakingSessionRef.current.sawPlaying = true;
+    }
+  }, [speakingOpen, latestNarration?.id, p.narrationPlaying]);
+
+  useEffect(() => {
+    if (!speakingOpen || !latestNarration?.ttsUrl) return;
+    if (p.narrationUrl !== latestNarration.ttsUrl) return;
+    if (!speakingSessionRef.current.sawPlaying) return;
+    if (p.narrationPlaying || p.narrationTimeMs <= 0) return;
+    c.markPlayed(latestNarration.id);
+  }, [speakingOpen, latestNarration, p.narrationUrl, p.narrationPlaying, p.narrationTimeMs, c]);
 
   // Fetch like status when song changes
   useEffect(() => {
@@ -246,7 +580,9 @@ export default function HomePage() {
 
       {/* 5. CHAT — CLAUDIO bar + messages + input */}
       <div className="chat-section">
-        <div className="chat-bar">
+        <div className="chat-bar" role="button" tabIndex={0}
+          onClick={() => setSpeakingOpen(true)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSpeakingOpen(true); }}>
           <div className="chat-bar-left">
             <span className={`chat-bar-dot ${active ? '' : ''}`} style={active ? {} : { background: '#555', boxShadow: 'none', animation: 'none' }} />
             <span>Claudio</span>
@@ -288,7 +624,7 @@ export default function HomePage() {
 
         <div className="chat-input-bar">
           <div className="chat-input-row">
-            <button className="btn-aidj" onClick={() => c.sendAidj('来点音乐')} disabled={c.isStreaming}>
+            <button className="btn-aidj" onClick={() => { p.preparePlayback(); c.sendAidj('来点音乐'); }} disabled={c.isStreaming}>
               AIDJ
             </button>
             <input className="chat-input" placeholder={listening ? 'Listening...' : 'Say something to the DJ...'}
@@ -312,6 +648,24 @@ export default function HomePage() {
         <span>CLAUDIO FM</span>
         <span>CONNECTED</span>
       </div>
+
+      <SpeakingOverlay
+        open={speakingOpen}
+        narration={latestNarration}
+        song={song || p.playlist[0] || null}
+        playlistCount={p.playlist.length}
+        musicPlaying={p.musicPlaying}
+        musicProgressMs={p.progressMs}
+        musicDurationMs={p.durationMs}
+        narrationPlaying={p.narrationPlaying}
+        narrationTimeMs={p.narrationTimeMs}
+        narrationDurationMs={p.narrationDurationMs}
+        onToggleMusic={p.toggleMusic}
+        onSeekMusic={p.seekTo}
+        onToggleNarration={p.toggleNarration}
+        onOpenProfile={() => setProfileOpen(true)}
+        onClose={() => setSpeakingOpen(false)}
+      />
 
     </>
   );

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Claudio — Private AI Music Radio",
   "scripts": {
-    "dev": "concurrently \"pnpm --filter @claudio/server dev\" \"pnpm --filter @claudio/web dev\"",
+    "dev": "concurrently \"node scripts/start-ncm-if-needed.mjs\" \"pnpm --filter @claudio/server dev\" \"pnpm --filter @claudio/web dev\"",
     "build": "pnpm --filter @claudio/server build && pnpm --filter @claudio/web build"
   },
   "pnpm": {

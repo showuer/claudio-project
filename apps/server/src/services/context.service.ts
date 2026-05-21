@@ -55,7 +55,10 @@ export const contextService = {
       '你是一个私人电台 DJ，叫 Claudio。根据天气、时间、用户品味从候选歌曲中选歌并为每首歌写串词。输出 JSON：{"say":"...","play":[{"id":"...","name":"...","artist":"..."}],"segue":"..."}'
     );
 
-    const fullSystem = systemPrompt
+    const fullSystem = `${systemPrompt}
+
+## Current playback rule
+When recommending songs, write one continuous playlist opening in "say" only. Do not write per-song intros. Return songs as metadata only: id, name, artist. The opening should feel like one connected FM monologue, with each sentence flowing into the next.`
       .replace('{{taste}}', taste)
       .replace('{{routines}}', routines)
       .replace('{{weather}}', weatherStr)

@@ -15,9 +15,9 @@ export const deepseekService = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: config.DEEPSEEK_MODEL,
         messages,
-        max_tokens: 4096,
+        max_tokens: 8192,
         temperature: 0.7,
         response_format: { type: 'json_object' },
         stream: true,

@@ -16,6 +16,7 @@ interface Message {
   role: 'user' | 'dj' | 'system';
   content: string;
   ttsUrl?: string;
+  alignment?: { segments: Array<{ text: string; start: number; end: number }> };
   played: boolean;
   status?: 'thinking' | 'streaming' | 'done';
   timestamp: string;
@@ -30,6 +31,7 @@ interface ChatState {
   sendAidj: (text: string) => Promise<void>;
   loadHistory: () => Promise<void>;
   addMessage: (msg: Message) => void;
+  attachTts: (id: string, ttsUrl: string, alignment?: Message['alignment']) => void;
   setTtsWord: (i: number) => void;
   markPlayed: (id: string) => void;
 }
@@ -40,6 +42,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentTtsWord: -1,
 
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  attachTts: (id, ttsUrl, alignment) => set((s) => ({
+    messages: s.messages.map((m) =>
+      m.id === id ? { ...m, ttsUrl, alignment, status: 'done', played: false } : m
+    ),
+  })),
   setTtsWord: (i) => set({ currentTtsWord: i }),
   markPlayed: (id) => set((s) => ({
     messages: s.messages.map((m) => (m.id === id ? { ...m, played: true } : m)),
@@ -87,7 +94,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const ttsUrl = result.ttsUrl || '';
       set((s) => ({
         messages: s.messages.map((m) =>
-          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, content: result.say || m.content } : m
+          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content } : m
         ),
         isStreaming: false,
       }));
@@ -97,20 +104,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (songList && songList.length > 0) {
         const { usePlayerStore } = await import('./playerStore');
         const ps = usePlayerStore.getState();
-        const intros = result.songIntros || {};
         ps.init();
-        ps.setPlaylist(
+        ps.queuePlaylist(
           songList.map((s: any) => ({
             song_id: s.id, song_name: s.name, artist: s.artist,
-            intro: s.intro || '', introUrl: intros[s.id] || '',
             duration_ms: 240000,
-          }))
+          })),
+          ttsUrl,
         );
-        if (ttsUrl) {
-          ps.playNarrationThenMusic(ttsUrl, 0);
-        } else {
-          ps.playTrack(0);
-        }
       }
     } catch (err: any) {
       set((s) => ({
@@ -146,7 +147,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const ttsUrl = result.ttsUrl || '';
       set((s) => ({
         messages: s.messages.map((m) =>
-          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, content: result.say || m.content } : m
+          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content } : m
         ),
         isStreaming: false,
       }));
@@ -154,20 +155,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (result.songs?.length) {
         const { usePlayerStore } = await import('./playerStore');
         const ps = usePlayerStore.getState();
-        const intros = result.songIntros || {};
         ps.init();
-        ps.setPlaylist(
+        ps.queuePlaylist(
           result.songs.map((s: any) => ({
             song_id: s.id, song_name: s.name, artist: s.artist,
-            intro: s.intro || '', introUrl: intros[s.id] || '',
             duration_ms: 240000,
-          }))
+          })),
+          ttsUrl,
         );
-        if (ttsUrl) {
-          ps.playNarrationThenMusic(ttsUrl, 0);
-        } else {
-          ps.playTrack(0);
-        }
       }
     } catch (err: any) {
       set((s) => ({

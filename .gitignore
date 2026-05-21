@@ -5,3 +5,4 @@ cache/tts/
 apps/server/.env
 *.tsbuildinfo
 .DS_Store
+.codex-logs/
