@@ -116,7 +116,7 @@ export function ProfileCard({ open, onToggle }: Props) {
 
   useEffect(() => {
     if (open) {
-      fetch('/api/profile/styles').then(r => r.json()).then(setProfile).catch(() => {});
+      fetch('/api/profile/memory/summary').then(r => r.json()).then(setProfile).catch(() => {});
     }
   }, [open]);
 

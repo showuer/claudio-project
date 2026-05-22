@@ -104,6 +104,35 @@ export const apiClient = {
     });
   },
 
+  async getMemory(): Promise<{ content: string }> {
+    const resp = await fetch(`${BASE}/api/profile/memory`);
+    return resp.json();
+  },
+
+  async saveMemory(content: string): Promise<{ saved: boolean }> {
+    const resp = await fetch(`${BASE}/api/profile/memory`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    return resp.json();
+  },
+
+  async getMemorySummary(): Promise<{
+    tags: string[];
+    topArtists: string[];
+    mood: string;
+    copy: string;
+    philosophy: string;
+    totalHours: number;
+    totalPlays: number;
+    avoid: string[];
+    routines: string[];
+  }> {
+    const resp = await fetch(`${BASE}/api/profile/memory/summary`);
+    return resp.json();
+  },
+
   async getSettings(): Promise<Record<string, string>> {
     const resp = await fetch(`${BASE}/api/settings`);
     return resp.json();
