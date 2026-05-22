@@ -85,6 +85,27 @@ function bulletLines(text: string): string[] {
     .filter((line) => !line.startsWith('#'));
 }
 
+function demoteUnknownLevelTwoHeadings(content: string): string {
+  const known = new Set<string>(SECTION_NAMES);
+  return content
+    .split('\n')
+    .map((line) => {
+      const match = line.match(/^##\s+(.+?)\s*$/);
+      if (!match) return line;
+      return known.has(match[1]) ? line : `### ${match[1]}`;
+    })
+    .join('\n');
+}
+
+function getLegacySection(content: string, heading: string): string {
+  const match = content.match(new RegExp(`(?:^|\\n)##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`));
+  return match ? match[1].trim() : '';
+}
+
+function removeLegacySection(content: string, heading: string): string {
+  return content.replace(new RegExp(`\\n?##\\s+${heading}\\s*\\n[\\s\\S]*?(?=\\n##\\s+|$)`), '').trim();
+}
+
 function uniq(items: string[], limit = 12): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -118,7 +139,7 @@ function replaceSection(content: string, name: string, body: string): string {
 }
 
 function ensureSections(content: string): string {
-  let next = content.trim() || '# Claudio Memory Profile';
+  let next = demoteUnknownLevelTwoHeadings(content).trim() || '# Claudio Memory Profile';
   if (!next.startsWith('# Claudio Memory Profile')) {
     next = `# Claudio Memory Profile\n\n## Identity\n${next}`;
   }
@@ -131,8 +152,10 @@ function ensureSections(content: string): string {
 }
 
 function buildInitialProfile(userDir: string, appsUserDir: string): string {
-  const taste = readSafe(path.join(userDir, 'taste.md'), '# 我的音乐品味\n- 喜欢自然、有情绪连接的歌').trim();
-  const routines = readSafe(path.join(userDir, 'routines.md'), '- 全天都可以听歌，但深夜更需要陪伴感').trim();
+  const legacyTaste = readSafe(path.join(userDir, 'taste.md'), '# 我的音乐品味\n- 喜欢自然、有情绪连接的歌').trim();
+  const taste = demoteUnknownLevelTwoHeadings(removeLegacySection(legacyTaste, '不喜欢的')).trim();
+  const legacyDislikes = bulletLines(getLegacySection(legacyTaste, '不喜欢的'));
+  const routines = demoteUnknownLevelTwoHeadings(readSafe(path.join(userDir, 'routines.md'), '- 全天都可以听歌，但深夜更需要陪伴感')).trim();
   const mood = readSafe(path.join(userDir, 'mood.md'), readSafe(path.join(appsUserDir, 'mood.md'), '平静')).trim();
 
   return ensureSections([
@@ -150,6 +173,7 @@ function buildInitialProfile(userDir: string, appsUserDir: string): string {
     '',
     '## Dislikes And Boundaries',
     '- 不要为了显得懂音乐而百科式解释。',
+    ...legacyDislikes.map((line) => `- ${line}`),
     '',
     '## Mood',
     `- ${mood || '平静'}`,

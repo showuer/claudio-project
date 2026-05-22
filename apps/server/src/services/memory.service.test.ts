@@ -24,6 +24,55 @@ test('initializes memory.profile.md from legacy taste routines and mood files', 
   assert.match(profile.content, /## Mood[\s\S]*有点累/);
 });
 
+test('keeps legacy nested markdown headings inside canonical sections parseable', async () => {
+  const userDir = makeUserDir();
+  fs.writeFileSync(path.join(userDir, 'taste.md'), [
+    '# 我的音乐品味',
+    '',
+    '## 风格偏好',
+    '- 华语流行/R&B：陶喆',
+    '',
+    '## 不喜欢的',
+    '- 重型摇滚/金属',
+    '- 抖音热歌',
+    '',
+  ].join('\n'), 'utf8');
+
+  const service = createMemoryService({ userDir });
+  const profile = await service.getEditableProfile();
+  const summary = await service.getSummary();
+
+  assert.match(profile.content, /### 风格偏好/);
+  assert.doesNotMatch(profile.content, /\n## 风格偏好/);
+  assert.match(profile.content, /## Dislikes And Boundaries[\s\S]*重型摇滚/);
+  assert.match(profile.content, /## Dislikes And Boundaries[\s\S]*抖音热歌/);
+  assert.doesNotMatch(profile.content, /## Taste[\s\S]*抖音热歌[\s\S]*## Dislikes And Boundaries/);
+  assert.match((await service.getPromptMemory('放点陶喆', 'music')), /陶喆/);
+  assert.ok(summary.tags.includes('华语流行/R&B'));
+  assert.ok(summary.avoid.some((item) => item.includes('重型摇滚')));
+});
+
+test('normalizes an existing profile that contains unknown level-two legacy headings', async () => {
+  const userDir = makeUserDir();
+  fs.writeFileSync(path.join(userDir, 'memory.profile.md'), [
+    '# Claudio Memory Profile',
+    '',
+    '## Taste',
+    '- R&B',
+    '',
+    '## 风格偏好',
+    '- 陶喆',
+    '',
+  ].join('\n'), 'utf8');
+
+  const service = createMemoryService({ userDir });
+  const profile = await service.getEditableProfile();
+
+  assert.match(profile.content, /### 风格偏好/);
+  assert.doesNotMatch(profile.content, /\n## 风格偏好/);
+  assert.match(await service.getPromptMemory('放点陶喆', 'music'), /陶喆/);
+});
+
 test('manual overrides appear before learned statistics in prompt memory', async () => {
   const userDir = makeUserDir();
   fs.writeFileSync(path.join(userDir, 'memory.profile.md'), [
