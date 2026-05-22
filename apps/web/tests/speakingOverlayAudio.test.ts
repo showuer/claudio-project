@@ -175,6 +175,22 @@ test('speaking overlay only auto-closes after it observed active narration', () 
   assert.equal(homePage.includes('if (!speakingSessionRef.current.sawPlaying) return;'), true);
 });
 
+test('speaking overlay marks narration played only once after playback ends', () => {
+  const homePage = fs.readFileSync(
+    path.resolve(__dirname, '../src/pages/HomePage.tsx'),
+    'utf-8',
+  );
+  const chatStore = fs.readFileSync(
+    path.resolve(__dirname, '../src/stores/chatStore.ts'),
+    'utf-8',
+  );
+
+  assert.equal(homePage.includes('if (latestNarration.played) return;'), true);
+  assert.equal(homePage.includes('latestNarration?.played'), true);
+  assert.equal(homePage.includes('latestNarration, p.narrationUrl'), false);
+  assert.equal(chatStore.includes('if (!target || target.played) return s;'), true);
+});
+
 test('speaking overlay fits subtitle segments to real audio duration', () => {
   const homePage = fs.readFileSync(
     path.resolve(__dirname, '../src/pages/HomePage.tsx'),
@@ -195,7 +211,10 @@ test('speaking overlay scrolls only the subtitle container to the current senten
 
   assert.equal(homePage.includes('transcriptRef'), true);
   assert.equal(homePage.includes('scrollIntoView'), false);
-  assert.equal(homePage.includes('transcript.scrollTo'), true);
+  assert.equal(homePage.includes('function scrollTranscriptTo'), true);
+  assert.equal(homePage.includes("typeof transcript.scrollTo === 'function'"), true);
+  assert.equal(homePage.includes('transcript.scrollTop = nextTop'), true);
+  assert.equal(homePage.includes('scrollTranscriptTo(transcript, targetTop)'), true);
   assert.equal(homePage.includes('currentLine.offsetTop'), true);
 });
 
@@ -221,4 +240,7 @@ test('speaking overlay spectrum uses full available hero area and grouped rhythm
   assert.match(homePage, /baseLevel/);
   assert.match(homePage, /groupedPulse/);
   assert.match(homePage, /Math\.max\(34, energy \* rect\.height \* shape\)/);
+  assert.match(homePage, /catch \(err\)[\s\S]*spectrum draw skipped/);
+  assert.match(homePage, /canvas\.width !== nextWidth \|\| canvas\.height !== nextHeight/);
+  assert.match(homePage, /typeof ctx\.roundRect === 'function'/);
 });

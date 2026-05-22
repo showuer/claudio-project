@@ -48,9 +48,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     ),
   })),
   setTtsWord: (i) => set({ currentTtsWord: i }),
-  markPlayed: (id) => set((s) => ({
-    messages: s.messages.map((m) => (m.id === id ? { ...m, played: true } : m)),
-  })),
+  markPlayed: (id) => set((s) => {
+    const target = s.messages.find((m) => m.id === id);
+    if (!target || target.played) return s;
+    return {
+      messages: s.messages.map((m) => (m.id === id ? { ...m, played: true } : m)),
+    };
+  }),
 
   sendMessage: async (text: string) => {
     const userMsg: Message = {

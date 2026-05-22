@@ -14,6 +14,7 @@ type NarrationMessage = {
   content: string;
   ttsUrl?: string;
   alignment?: { segments: AlignmentSegment[] };
+  played?: boolean;
 };
 
 function formatTime(seconds: number) {
@@ -84,6 +85,15 @@ function fitSegmentsToDuration(
 
 function buildFallbackSegments(text: string, targetDuration = 0): AlignmentSegment[] {
   return fitSegmentsToDuration([], text, targetDuration);
+}
+
+function scrollTranscriptTo(transcript: HTMLDivElement, top: number) {
+  const nextTop = Math.max(0, top);
+  if (typeof transcript.scrollTo === 'function') {
+    transcript.scrollTo({ top: nextTop, behavior: 'smooth' });
+    return;
+  }
+  transcript.scrollTop = nextTop;
 }
 
 function SpeakingOverlay({
@@ -183,61 +193,71 @@ function SpeakingOverlay({
     if (!open) return;
     let raf = 0;
     const draw = () => {
-      const analyser = analyserRef.current;
-      const data = new Uint8Array(analyser?.frequencyBinCount || 128);
-      if (analyser) analyser.getByteFrequencyData(data);
+      try {
+        const analyser = analyserRef.current;
+        const data = new Uint8Array(analyser?.frequencyBinCount || 128);
+        if (analyser) analyser.getByteFrequencyData(data);
 
-      const paint = (canvas: HTMLCanvasElement | null) => {
-        if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
-        if (canvas.width !== Math.floor(rect.width * dpr)) {
-          canvas.width = Math.floor(rect.width * dpr);
-          canvas.height = Math.floor(rect.height * dpr);
-        }
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, rect.width, rect.height);
-        const now = performance.now() / 1000;
-        const count = Math.max(72, Math.floor(rect.width / 5.4));
-        const groupCount = 24;
-        const groupEnergies = Array.from({ length: groupCount }, (_, groupIndex) => {
-          const start = Math.floor((groupIndex / groupCount) * data.length);
-          const end = Math.max(start + 1, Math.floor(((groupIndex + 1) / groupCount) * data.length));
-          let sum = 0;
-          for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
-            sum += data[sampleIndex] || 0;
+        const paint = (canvas: HTMLCanvasElement | null) => {
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          const dpr = window.devicePixelRatio || 1;
+          const nextWidth = Math.floor(rect.width * dpr);
+          const nextHeight = Math.floor(rect.height * dpr);
+          if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+            canvas.width = nextWidth;
+            canvas.height = nextHeight;
           }
-          const raw = analyser ? sum / Math.max(1, end - start) / 255 : 0;
-          return Math.min(1, Math.pow(raw, 0.62) * 1.85);
-        });
-        const baseLevel = musicPlaying ? 0.32 : 0.28;
-        const gap = rect.width / count;
-        const barW = Math.max(2, gap * 0.48);
-        for (let i = 0; i < count; i++) {
-          const position = (i / Math.max(1, count - 1)) * (groupCount - 1);
-          const leftGroup = Math.floor(position);
-          const rightGroup = Math.min(groupCount - 1, leftGroup + 1);
-          const mix = position - leftGroup;
-          const groupedEnergy = groupEnergies[leftGroup] * (1 - mix) + groupEnergies[rightGroup] * mix;
-          const phrase = Math.floor(i / 5);
-          const baseWave = 0.82 + Math.sin(phrase * 0.55 + now * 2.1) * 0.11;
-          const localWave = 0.94 + Math.sin(i * 0.18 + now * 1.35) * 0.055;
-          const shape = 0.45 + 0.55 * Math.pow(Math.sin((i / count) * Math.PI), 0.9);
-          const groupedPulse = 0.94 + Math.sin(Math.floor(i / 6) * 0.72 + now * 2.35) * 0.08;
-          const energy = Math.max(baseLevel, groupedEnergy) * baseWave * localWave * groupedPulse;
-          const h = Math.max(34, energy * rect.height * shape);
-          const x = i * gap;
-          const y = rect.height - h;
-          ctx.fillStyle = '#F9FAFB';
-          ctx.beginPath();
-          ctx.roundRect(x, y, barW, h, barW / 2);
-          ctx.fill();
-        }
-      };
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.clearRect(0, 0, rect.width, rect.height);
+          const now = performance.now() / 1000;
+          const count = Math.max(72, Math.floor(rect.width / 5.4));
+          const groupCount = 24;
+          const groupEnergies = Array.from({ length: groupCount }, (_, groupIndex) => {
+            const start = Math.floor((groupIndex / groupCount) * data.length);
+            const end = Math.max(start + 1, Math.floor(((groupIndex + 1) / groupCount) * data.length));
+            let sum = 0;
+            for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
+              sum += data[sampleIndex] || 0;
+            }
+            const raw = analyser ? sum / Math.max(1, end - start) / 255 : 0;
+            return Math.min(1, Math.pow(raw, 0.62) * 1.85);
+          });
+          const baseLevel = musicPlaying ? 0.32 : 0.28;
+          const gap = rect.width / count;
+          const barW = Math.max(2, gap * 0.48);
+          for (let i = 0; i < count; i++) {
+            const position = (i / Math.max(1, count - 1)) * (groupCount - 1);
+            const leftGroup = Math.floor(position);
+            const rightGroup = Math.min(groupCount - 1, leftGroup + 1);
+            const mix = position - leftGroup;
+            const groupedEnergy = groupEnergies[leftGroup] * (1 - mix) + groupEnergies[rightGroup] * mix;
+            const phrase = Math.floor(i / 5);
+            const baseWave = 0.82 + Math.sin(phrase * 0.55 + now * 2.1) * 0.11;
+            const localWave = 0.94 + Math.sin(i * 0.18 + now * 1.35) * 0.055;
+            const shape = 0.45 + 0.55 * Math.pow(Math.sin((i / count) * Math.PI), 0.9);
+            const groupedPulse = 0.94 + Math.sin(Math.floor(i / 6) * 0.72 + now * 2.35) * 0.08;
+            const energy = Math.max(baseLevel, groupedEnergy) * baseWave * localWave * groupedPulse;
+            const h = Math.max(34, energy * rect.height * shape);
+            const x = i * gap;
+            const y = rect.height - h;
+            ctx.fillStyle = '#F9FAFB';
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+              ctx.roundRect(x, y, barW, h, barW / 2);
+            } else {
+              ctx.rect(x, y, barW, h);
+            }
+            ctx.fill();
+          }
+        };
 
-      paint(heroCanvasRef.current);
+        paint(heroCanvasRef.current);
+      } catch (err) {
+        console.warn('[SpeakingOverlay] spectrum draw skipped', err);
+      }
       raf = requestAnimationFrame(draw);
     };
     draw();
@@ -250,10 +270,7 @@ function SpeakingOverlay({
     const currentLine = transcript?.querySelector<HTMLElement>('.speaking-line.is-current');
     if (!transcript || !currentLine) return;
     const targetTop = currentLine.offsetTop - (transcript.clientHeight / 2) + (currentLine.clientHeight / 2);
-    transcript.scrollTo({
-      top: Math.max(0, targetTop),
-      behavior: 'smooth',
-    });
+    scrollTranscriptTo(transcript, targetTop);
   }, [open, currentIndex]);
 
   if (!open) return null;
@@ -442,11 +459,21 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!speakingOpen || !latestNarration?.ttsUrl) return;
+    if (latestNarration.played) return;
     if (p.narrationUrl !== latestNarration.ttsUrl) return;
     if (!speakingSessionRef.current.sawPlaying) return;
     if (p.narrationPlaying || p.narrationTimeMs <= 0) return;
     c.markPlayed(latestNarration.id);
-  }, [speakingOpen, latestNarration, p.narrationUrl, p.narrationPlaying, p.narrationTimeMs, c]);
+  }, [
+    speakingOpen,
+    latestNarration?.id,
+    latestNarration?.played,
+    latestNarration?.ttsUrl,
+    p.narrationUrl,
+    p.narrationPlaying,
+    p.narrationTimeMs,
+    c.markPlayed,
+  ]);
 
   // Fetch like status when song changes
   useEffect(() => {
