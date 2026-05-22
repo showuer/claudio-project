@@ -42,12 +42,9 @@ export const ncmService = {
   },
 
   async getSongUrl(songId: string): Promise<string | null> {
-    // Try lossless and standard in parallel, use lossless if available
-    const [lossless, standard] = await Promise.all([
-      fetchNcm('/song/url/v1', { id: songId, level: 'lossless' }),
-      fetchNcm('/song/url/v1', { id: songId, level: 'standard' }),
-    ]);
-    return lossless?.data?.[0]?.url || standard?.data?.[0]?.url || null;
+    // Browser playback is more reliable with standard MP3 streams than lossless FLAC.
+    const standard = await fetchNcm('/song/url/v1', { id: songId, level: 'standard' });
+    return standard?.data?.[0]?.url || null;
   },
 
   async getSongDetail(songId: string): Promise<SongDetail | null> {
