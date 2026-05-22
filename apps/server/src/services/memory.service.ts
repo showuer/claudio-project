@@ -31,6 +31,16 @@ export interface SearchHints {
   routines: string[];
 }
 
+export interface ClaudioMemoryService {
+  getEditableProfile(): Promise<{ content: string }>;
+  saveEditableProfile(content: string): Promise<{ saved: true }>;
+  getPromptMemory(userMessage: string, mode?: MemoryMode): Promise<string>;
+  getSummary(): Promise<MemorySummary>;
+  updateStyleTags(tags: string[]): Promise<{ saved: true; tags: string[] }>;
+  updateMood(mood: string): Promise<{ saved: true; mood: string }>;
+  getSearchHints(): Promise<SearchHints>;
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..', '..', '..', '..');
 const DEFAULT_USER_DIR = path.join(ROOT_DIR, 'user');
@@ -212,7 +222,7 @@ export function createMemoryService(options?: {
   userDir?: string;
   appsUserDir?: string;
   getStats?: () => Promise<MemoryStats>;
-}) {
+}): ClaudioMemoryService {
   const userDir = options?.userDir || DEFAULT_USER_DIR;
   const appsUserDir = options?.appsUserDir || DEFAULT_APPS_USER_DIR;
   const getStats = options?.getStats || playsRepo.getStats.bind(playsRepo);

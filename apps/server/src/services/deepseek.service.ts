@@ -1,9 +1,11 @@
 import { config } from '../config.js';
 
 interface DeepSeekOutput {
+  theme?: string;
   say: string;
-  play: Array<{ id: string; name: string; artist: string }>;
-  segue: string;
+  songs?: Array<{ id: string; name: string; artist: string }>;
+  play?: Array<{ id: string; name: string; artist: string }>;
+  segue?: string;
 }
 
 export const deepseekService = {

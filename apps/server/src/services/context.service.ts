@@ -13,7 +13,7 @@ function readFileSafe(filePath: string, fallback: string = ''): string {
   try { return fs.readFileSync(filePath, 'utf-8'); } catch { return fallback; }
 }
 
-interface LibrarySong {
+export interface LibrarySong {
   id: string; name: string; artist: string; album: string;
 }
 

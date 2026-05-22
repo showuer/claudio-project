@@ -14,6 +14,18 @@ export type MusicIntent =
   | { kind: 'music'; query: string; reason: 'explicit-search' | 'explicit-play' | 'scene' }
   | { kind: 'chat'; query: string; reason: 'question-about-entity' | 'no-music-intent' };
 
+export interface SearchPlayableResult {
+  intent: MusicIntent;
+  keyword: string;
+  source: 'ncm' | 'local' | 'none';
+  songs: SongCandidate[];
+}
+
+export interface ClaudioSearchService {
+  detectIntent(message: string): MusicIntent;
+  searchPlayable(message: string, limit?: number): Promise<SearchPlayableResult>;
+}
+
 type NcmLike = {
   search(keyword: string, limit?: number): Promise<SongCandidate[]>;
   getSongUrl(songId: string): Promise<string | null>;
@@ -44,7 +56,7 @@ export function createSearchService(options?: {
   ncm?: NcmLike;
   getMemoryHints?: () => Promise<SearchHints>;
   getLocalCandidates?: (count?: number) => SongCandidate[];
-}) {
+}): ClaudioSearchService {
   const ncm = options?.ncm || ncmService;
   const getMemoryHints = options?.getMemoryHints || memoryService.getSearchHints.bind(memoryService);
   const getLocalCandidates = options?.getLocalCandidates || contextService.getCandidates.bind(contextService);
@@ -83,7 +95,7 @@ export function createSearchService(options?: {
     return playable;
   }
 
-  async function searchPlayable(message: string, limit = 10) {
+  async function searchPlayable(message: string, limit = 10): Promise<SearchPlayableResult> {
     const intent = detectIntent(message);
     if (intent.kind === 'chat') {
       return { intent, keyword: intent.query, source: 'none' as const, songs: [] as SongCandidate[] };
