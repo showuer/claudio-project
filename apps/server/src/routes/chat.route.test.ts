@@ -35,3 +35,18 @@ test('aidj collects a stable ten song queue', () => {
   assert.match(chatRoute, /return songs\.slice\(0, targetCount\)/);
   assert.equal(chatRoute.includes('getCandidates(8)'), false);
 });
+
+test('chat route uses searchService for explicit music intent before DeepSeek playlist flow', () => {
+  const chatRoute = fs.readFileSync(path.join(__dirname, 'chat.ts'), 'utf-8');
+
+  assert.match(chatRoute, /searchService\.searchPlayable\(message,\s*AIDJ_TRACK_COUNT\)/);
+  assert.doesNotMatch(chatRoute, /const searchMatch = message\.match/);
+  assert.doesNotMatch(chatRoute, /ncmService\.search\(searchMatch\[2\]/);
+});
+
+test('chat route writes detected mood through memoryService', () => {
+  const chatRoute = fs.readFileSync(path.join(__dirname, 'chat.ts'), 'utf-8');
+
+  assert.match(chatRoute, /memoryService\.updateMood/);
+  assert.doesNotMatch(chatRoute, /writeFileSync\(path\.join\(rootDir, 'user', 'mood\.md'\)/);
+});

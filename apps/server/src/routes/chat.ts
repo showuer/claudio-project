@@ -1,15 +1,12 @@
 import { FastifyInstance } from 'fastify';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { contextService } from '../services/context.service.js';
 import { deepseekService } from '../services/deepseek.service.js';
 import { messagesRepo } from '../db/messages.repo.js';
 import { ncmService } from '../services/ncm.service.js';
 import { ttsService } from '../services/tts.service.js';
+import { searchService } from '../services/search.service.js';
+import { memoryService } from '../services/memory.service.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, "../../..");
 const AIDJ_TRACK_COUNT = 10;
 
 function ensureOneMinuteOpening(
@@ -87,15 +84,53 @@ export function registerChatRoutes(app: FastifyInstance) {
       return { type: 'command', action: 'next' };
     }
 
-    // Search intent
-    const searchMatch = message.match(/^(搜索|找|搜|有没有)\s*(.+)/i);
-    if (searchMatch) {
-      const results = await ncmService.search(searchMatch[2], 10);
-      return { type: 'search', results };
+    const playableSearch = await searchService.searchPlayable(message, AIDJ_TRACK_COUNT);
+    if (playableSearch.intent.kind === 'music') {
+      const songs = playableSearch.songs.map((s) => ({
+        id: s.id,
+        name: s.name,
+        artist: s.artist || '未知',
+      }));
+      if (songs.length === 0) {
+        return { type: 'chat', say: `我认真找了「${playableSearch.keyword}」，但现在没有拿到可播放的版本。` };
+      }
+
+      const ctx = await contextService.assembleContext(message, 'music');
+      const candidateStr = songs.map((s, i) => `${i + 1}. [${s.id}] ${s.name} - ${s.artist}`).join('\n');
+      const openingPrompt = [
+        { role: 'system' as const, content: ctx.systemPrompt.replace('{{chatHistory}}', '（本轮是明确搜歌/放歌请求）') },
+        { role: 'user' as const, content: `用户明确想听: ${message}\n\n后端已经找到这些可播放歌曲:\n${candidateStr}\n\n只从这些歌里组织一个 10 首以内歌单。写一段完整中文 FM intro，不要逐首介绍。返回严格 JSON: {"theme":"主题","say":"180-280字中文开场，只重点解读其中一首最推荐的歌","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}` },
+      ];
+      const output = await deepseekService.chatComplete(openingPrompt);
+      const say = ensureOneMinuteOpening(output.say || `找到 ${playableSearch.keyword} 了，我们慢慢听。`, songs);
+      const ttsResult = await ttsService.synthesize(say);
+      if ((output as any).mood && typeof (output as any).mood === 'string') {
+        await memoryService.updateMood((output as any).mood);
+      }
+      const djMsgId = crypto.randomUUID();
+      await messagesRepo.insert({
+        id: djMsgId,
+        role: 'dj',
+        content: say,
+        tts_url: ttsResult.audioUrl || null,
+        played: 0,
+      });
+      return {
+        type: 'playlist',
+        id: djMsgId,
+        say,
+        ttsUrl: ttsResult.audioUrl,
+        alignment: ttsResult.alignment,
+        theme: output.theme || playableSearch.keyword,
+        songs,
+        songIntros: {},
+        songIntroAlignments: {},
+        source: playableSearch.source,
+      };
     }
 
     // --- Semantic intent detection (BEFORE opening SSE) ---
-    const ctx = await contextService.assembleContext(message);
+    const ctx = await contextService.assembleContext(message, 'chat');
     const userMsg = message.trim();
     const wantsDaily = /每日推荐|今日推荐|日推|daily/.test(userMsg);
     const wantsPlaylist = /歌单|收藏|我的.*歌|红心|我喜欢|我.*喜欢/.test(userMsg);
@@ -192,10 +227,7 @@ export function registerChatRoutes(app: FastifyInstance) {
 
       // Save detected mood
       if ((output as any).mood && typeof (output as any).mood === 'string') {
-        try {
-          fs.mkdirSync(path.join(rootDir, 'user'), { recursive: true });
-          fs.writeFileSync(path.join(rootDir, 'user', 'mood.md'), (output as any).mood.trim(), 'utf-8');
-        } catch { /* non-critical */ }
+        await memoryService.updateMood((output as any).mood);
       }
 
       const djMsgId = crypto.randomUUID();
@@ -237,7 +269,7 @@ export function registerChatRoutes(app: FastifyInstance) {
       const songList = await collectAidjSongs(AIDJ_TRACK_COUNT);
 
       // 2. DeepSeek opening monologue
-      const ctx = await contextService.assembleContext(userInput);
+      const ctx = await contextService.assembleContext(userInput, 'aidj');
       const recentHistory = await messagesRepo.getRecent(12);
       const historyStr = recentHistory
         .filter((m) => m.role !== 'system' && !m.content?.startsWith('['))
