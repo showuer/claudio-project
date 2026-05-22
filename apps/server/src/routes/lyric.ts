@@ -1,12 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { getDbSync, saveDb } from '../db/db.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USER_DIR = path.join(__dirname, '..', '..', '..', '..', 'user');
+import { memoryService } from '../services/memory.service.js';
 
 const BASE = 'http://localhost:3000';
 const COOKIE = config.NCM_COOKIE || '';
@@ -43,46 +38,10 @@ function syncLocalLike(songId: string, songName: string, artist: string, like: b
   } catch { /* non-critical */ }
 }
 
-function updateTasteFromLike(artist: string, like: boolean) {
+async function updateMemoryFromLike(artist: string, like: boolean) {
   if (!artist || !like) return;
   try {
-    fs.mkdirSync(USER_DIR, { recursive: true });
-    const tastePath = path.join(USER_DIR, 'taste.md');
-    let taste = '';
-    try { taste = fs.readFileSync(tastePath, 'utf-8'); } catch { taste = '# 我的音乐品味\n\n## 风格偏好\n- \n'; }
-
-    // Check if artist already mentioned
-    if (taste.includes(artist)) return;
-
-    // Append artist to 风格偏好 section
-    const lines = taste.split('\n');
-    let inserted = false;
-    const newLines = lines.map((line, i) => {
-      if (!inserted && line.startsWith('## 风格偏好')) {
-        // Find the next blank line or next section after this one
-        for (let j = i + 1; j < lines.length; j++) {
-          if (lines[j].startsWith('## ')) {
-            // Insert before next section
-            lines.splice(j, 0, '', `- ${artist}`);
-            inserted = true;
-            break;
-          }
-          if (j === lines.length - 1) {
-            // End of file
-            lines.push('', `- ${artist}`);
-            inserted = true;
-            break;
-          }
-        }
-      }
-      return line;
-    });
-    if (inserted) {
-      fs.writeFileSync(tastePath, lines.join('\n'), 'utf-8');
-    } else {
-      // No 风格偏好 section yet — append one
-      fs.writeFileSync(tastePath, taste.trimEnd() + '\n\n## 风格偏好\n- ' + artist + '\n', 'utf-8');
-    }
+    await memoryService.addTastePreference(artist);
   } catch { /* non-critical */ }
 }
 
@@ -132,8 +91,8 @@ export function registerLyricRoutes(app: FastifyInstance) {
     // 1. Save locally (always works, no network needed)
     syncLocalLike(songId, body.songName || '', body.artist || '', body.like);
 
-    // 2. Update taste.md with new artist
-    updateTasteFromLike(body.artist || '', body.like);
+    // 2. Update canonical memory with the liked artist
+    await updateMemoryFromLike(body.artist || '', body.like);
 
     // 3. Sync to NCM (best effort)
     try {

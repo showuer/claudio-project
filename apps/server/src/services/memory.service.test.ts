@@ -138,6 +138,20 @@ test('updates taste tags inside canonical memory profile', async () => {
   assert.match(profile.content, /## Taste[\s\S]*- R&B[\s\S]*- MANDARIN POP/);
 });
 
+test('adds liked artists to canonical taste preferences without touching other sections', async () => {
+  const userDir = makeUserDir();
+  const service = createMemoryService({ userDir });
+
+  const first = await service.addTastePreference('陶喆');
+  const second = await service.addTastePreference('陶喆');
+  const profile = await service.getEditableProfile();
+
+  assert.equal(first.added, true);
+  assert.equal(second.added, false);
+  assert.match(profile.content, /### 风格偏好[\s\S]*- 陶喆/);
+  assert.match(profile.content, /## Manual Overrides[\s\S]*## Taste/);
+});
+
 test('summary endpoint returns compact UI fields', async () => {
   const userDir = makeUserDir();
   fs.writeFileSync(path.join(userDir, 'memory.profile.md'), [

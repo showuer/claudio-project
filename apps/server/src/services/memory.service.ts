@@ -37,6 +37,7 @@ export interface ClaudioMemoryService {
   getPromptMemory(userMessage: string, mode?: MemoryMode): Promise<string>;
   getSummary(): Promise<MemorySummary>;
   updateStyleTags(tags: string[]): Promise<{ saved: true; tags: string[] }>;
+  addTastePreference(preference: string): Promise<{ saved: true; added: boolean; preference: string }>;
   updateMood(mood: string): Promise<{ saved: true; mood: string }>;
   getSearchHints(): Promise<SearchHints>;
 }
@@ -113,6 +114,16 @@ function getNestedSection(content: string, heading: string): string {
 
 function getTastePreferenceText(taste: string): string {
   return getNestedSection(taste, '风格偏好') || taste;
+}
+
+function appendNestedPreference(taste: string, preference: string): string {
+  const clean = preference.trim();
+  if (!clean || taste.includes(clean)) return taste;
+  const sectionRe = /(^|\n)###\s+风格偏好\s*\n([\s\S]*?)(?=\n###\s+|$)/;
+  if (sectionRe.test(taste)) {
+    return taste.replace(sectionRe, (match) => `${match.trimEnd()}\n- ${clean}`);
+  }
+  return `${taste.trimEnd()}\n\n### 风格偏好\n- ${clean}`;
 }
 
 function uniq(items: string[], limit = 12): string[] {
@@ -318,6 +329,17 @@ export function createMemoryService(options?: {
     return { saved: true as const, tags: clean };
   }
 
+  async function addTastePreference(preference: string) {
+    const clean = preference.trim();
+    if (!clean) return { saved: true as const, added: false, preference: clean };
+    const profile = await loadProfile();
+    const taste = extractSection(profile, 'Taste');
+    const nextTaste = appendNestedPreference(taste, clean);
+    if (nextTaste === taste) return { saved: true as const, added: false, preference: clean };
+    writeSafe(profilePath, replaceSection(profile, 'Taste', nextTaste));
+    return { saved: true as const, added: true, preference: clean };
+  }
+
   async function updateMood(mood: string) {
     const clean = mood.trim();
     const profile = await loadProfile();
@@ -344,6 +366,7 @@ export function createMemoryService(options?: {
     getPromptMemory,
     getSummary,
     updateStyleTags,
+    addTastePreference,
     updateMood,
     getSearchHints,
   };
