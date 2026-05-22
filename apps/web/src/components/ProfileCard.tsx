@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { DotMatrixLabel } from './DotMatrixDisplay';
 
-const AVATAR = '/avatars/claude.png';
+const AVATAR = '/avatars/codex.png';
 
 interface ProfileData {
   tags: string[];

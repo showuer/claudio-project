@@ -5,7 +5,7 @@ import { wsClient } from '../api/ws';
 import { DotMatrixClock } from '../components/DotMatrixDisplay';
 import { ProfileCard } from '../components/ProfileCard';
 
-const AI_AVATAR = '/avatars/claude.png';
+const AI_AVATAR = '/avatars/codex.png';
 const USER_AVATAR = '/avatars/me.png';
 
 type AlignmentSegment = { text: string; start: number; end: number };
