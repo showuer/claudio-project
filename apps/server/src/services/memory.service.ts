@@ -106,6 +106,15 @@ function removeLegacySection(content: string, heading: string): string {
   return content.replace(new RegExp(`\\n?##\\s+${heading}\\s*\\n[\\s\\S]*?(?=\\n##\\s+|$)`), '').trim();
 }
 
+function getNestedSection(content: string, heading: string): string {
+  const match = content.match(new RegExp(`(?:^|\\n)###\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n###\\s+|$)`));
+  return match ? match[1].trim() : '';
+}
+
+function getTastePreferenceText(taste: string): string {
+  return getNestedSection(taste, '风格偏好') || taste;
+}
+
 function uniq(items: string[], limit = 12): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -279,7 +288,8 @@ export function createMemoryService(options?: {
 
   async function getSummary(): Promise<MemorySummary> {
     const [profile, stats] = await Promise.all([loadProfile(), getStats()]);
-    const tasteLines = bulletLines(extractSection(profile, 'Taste'));
+    const tasteText = extractSection(profile, 'Taste');
+    const tasteLines = bulletLines(getTastePreferenceText(tasteText));
     const avoid = bulletLines(extractSection(profile, 'Dislikes And Boundaries')).slice(0, 6);
     const routines = bulletLines(extractSection(profile, 'Routines')).slice(0, 6);
     const identity = extractSection(profile, 'Identity');
@@ -317,7 +327,7 @@ export function createMemoryService(options?: {
 
   async function getSearchHints(): Promise<SearchHints> {
     const [profile, stats] = await Promise.all([loadProfile(), getStats()]);
-    const taste = bulletLines(extractSection(profile, 'Taste'));
+    const taste = bulletLines(getTastePreferenceText(extractSection(profile, 'Taste')));
     const topArtists = stats.topArtists.map((a) => a.artist);
     return {
       preferredArtists: uniq([...topArtists, ...taste.filter((line) => line.length <= 20)], 12),

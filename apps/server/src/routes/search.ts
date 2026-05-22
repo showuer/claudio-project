@@ -6,7 +6,7 @@ export function registerSearchRoutes(app: FastifyInstance) {
     const { keyword, q, limit } = req.query as { keyword?: string; q?: string; limit?: string };
     const query = keyword || q || '';
     if (!query) return { results: [] };
-    const result = await searchService.searchPlayable(query, parseInt(limit || '10'));
+    const result = await searchService.searchPlayable(`搜索 ${query}`, parseInt(limit || '10'));
     return { results: result.songs, keyword: result.keyword, source: result.source };
   });
 }

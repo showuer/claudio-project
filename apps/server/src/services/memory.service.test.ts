@@ -49,6 +49,8 @@ test('keeps legacy nested markdown headings inside canonical sections parseable'
   assert.doesNotMatch(profile.content, /## Taste[\s\S]*抖音热歌[\s\S]*## Dislikes And Boundaries/);
   assert.match((await service.getPromptMemory('放点陶喆', 'music')), /陶喆/);
   assert.ok(summary.tags.includes('华语流行/R&B'));
+  assert.equal(summary.tags.includes('我的音乐品味'), false);
+  assert.equal(summary.tags.includes('不需要翻译。'), false);
   assert.ok(summary.avoid.some((item) => item.includes('重型摇滚')));
 });
 
