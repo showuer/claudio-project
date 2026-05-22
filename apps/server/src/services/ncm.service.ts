@@ -42,9 +42,14 @@ export const ncmService = {
   },
 
   async getSongUrl(songId: string): Promise<string | null> {
-    // Browser playback is more reliable with standard MP3 streams than lossless FLAC.
-    const standard = await fetchNcm('/song/url/v1', { id: songId, level: 'standard' });
-    return standard?.data?.[0]?.url || null;
+    // Prefer high-bitrate browser-safe MP3. Lossless FLAC is often huge and less reliable in browser playback.
+    const levels = ['exhigh', 'higher', 'standard'];
+    for (const level of levels) {
+      const json = await fetchNcm('/song/url/v1', { id: songId, level });
+      const item = json?.data?.[0];
+      if (item?.url) return item.url;
+    }
+    return null;
   },
 
   async getSongDetail(songId: string): Promise<SongDetail | null> {
