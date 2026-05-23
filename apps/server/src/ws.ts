@@ -1,18 +1,31 @@
 import { FastifyInstance } from 'fastify';
 import { queueRepo } from './db/queue.repo.js';
 
+const MAX_CLIENTS = 50;
 const clients = new Set<{ send: (data: string) => void }>();
+
+export function getClientCount(): number {
+  return clients.size;
+}
 
 export function broadcast(event: object) {
   const data = JSON.stringify(event);
+  const deadClients: Set<{ send: (data: string) => void }> = new Set();
   for (const client of clients) {
-    try { client.send(data); } catch { clients.delete(client); }
+    try { client.send(data); } catch { deadClients.add(client); }
+  }
+  for (const dead of deadClients) {
+    clients.delete(dead);
   }
 }
 
 export function registerWebSocket(app: FastifyInstance) {
   app.register(async (app) => {
-    app.get('/ws', { websocket: true }, (socket) => {
+    app.get('/ws', { websocket: true }, (socket, req) => {
+      if (clients.size >= MAX_CLIENTS) {
+        socket.close(1013, 'Too many connections');
+        return;
+      }
       const client = { send: (data: string) => socket.send(data) };
       clients.add(client);
 

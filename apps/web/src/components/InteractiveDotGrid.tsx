@@ -17,10 +17,13 @@ export default function InteractiveDotGrid() {
     let mouseX = -999;
     let mouseY = -999;
     let raf = 0;
+    let ro: ResizeObserver | null = null;
 
     function resize() {
-      const w = canvas!.parentElement!.clientWidth;
-      const h = canvas!.parentElement!.clientHeight;
+      const parent = canvas!.parentElement;
+      if (!parent) return;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
       canvas!.width = w * dpr;
       canvas!.height = h * dpr;
       canvas!.style.width = w + 'px';
@@ -33,13 +36,11 @@ export default function InteractiveDotGrid() {
       const h = canvas!.height / dpr;
       ctx!.clearRect(0, 0, w, h);
 
-      const startCol = 0;
       const endCol = Math.ceil(w / SPACING) + 1;
-      const startRow = 0;
       const endRow = Math.ceil(h / SPACING) + 1;
 
-      for (let row = startRow; row <= endRow; row++) {
-        for (let col = startCol; col <= endCol; col++) {
+      for (let row = 0; row <= endRow; row++) {
+        for (let col = 0; col <= endCol; col++) {
           const x = col * SPACING;
           const y = row * SPACING;
 
@@ -79,17 +80,21 @@ export default function InteractiveDotGrid() {
       mouseY = e.clientY - rect.top;
     };
     const onLeave = () => { mouseX = -999; mouseY = -999; };
-    const onResize = () => resize();
 
+    // ResizeObserver on parent catches Debug Panel width changes + window resize
+    const parent = canvas.parentElement;
+    if (parent) {
+      ro = new ResizeObserver(() => resize());
+      ro.observe(parent);
+    }
     window.addEventListener('mousemove', onMove, { passive: true });
     canvas.addEventListener('mouseleave', onLeave);
-    window.addEventListener('resize', onResize);
 
     return () => {
       cancelAnimationFrame(raf);
+      ro?.disconnect();
       window.removeEventListener('mousemove', onMove);
       canvas.removeEventListener('mouseleave', onLeave);
-      window.removeEventListener('resize', onResize);
     };
   }, []);
 

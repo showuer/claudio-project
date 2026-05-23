@@ -24,7 +24,7 @@ export async function getDb(): Promise<Database> {
   }
 
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
-  db.run(schema);
+  db.exec(schema);
   saveDb();
 
   return db;
@@ -35,7 +35,29 @@ export function getDbSync(): Database {
   return db;
 }
 
+let saveMutex = false;
+let savePending = false;
+
 export function saveDb() {
+  if (!db) return;
+  if (saveMutex) {
+    savePending = true;
+    return;
+  }
+  saveMutex = true;
+  savePending = false;
+  const data = db.export();
+  fs.writeFile(DB_PATH, Buffer.from(data), (err) => {
+    saveMutex = false;
+    if (err) console.error('[DB] save failed:', err.message);
+    if (savePending) {
+      savePending = false;
+      saveDb();
+    }
+  });
+}
+
+export function saveDbSync() {
   if (!db) return;
   const data = db.export();
   const buffer = Buffer.from(data);

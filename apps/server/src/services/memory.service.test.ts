@@ -152,6 +152,24 @@ test('adds liked artists to canonical taste preferences without touching other s
   assert.match(profile.content, /## Manual Overrides[\s\S]*## Taste/);
 });
 
+test('liked songs create weak song/style signals without defining artist taste', async () => {
+  const userDir = makeUserDir();
+  const service = createMemoryService({ userDir });
+
+  const saved = await service.recordLikedSongSignal({ id: '123', name: '普通朋友', artist: '陶喆' });
+  const profile = await service.getEditableProfile();
+  const promptMemory = await service.getPromptMemory('来点中午听的歌', 'music');
+  const tasteSection = profile.content.match(/## Taste\n([\s\S]*?)(?=\n## |$)/)?.[1] || '';
+
+  assert.equal(saved.saved, true);
+  assert.ok(saved.signals.includes('华语 R&B / soul'));
+  assert.match(profile.content, /## Liked Song Signals[\s\S]*普通朋友 - 陶喆[\s\S]*weak style signals: 华语 R&B \/ soul/);
+  assert.doesNotMatch(tasteSection, /- 陶喆/);
+  assert.doesNotMatch(profile.content, /## Liked Song Signals[\s\S]*- 无/);
+  assert.match(promptMemory, /weak evidence only/);
+  assert.match(promptMemory, /普通朋友 - 陶喆/);
+});
+
 test('summary endpoint returns compact UI fields', async () => {
   const userDir = makeUserDir();
   fs.writeFileSync(path.join(userDir, 'memory.profile.md'), [
@@ -162,6 +180,9 @@ test('summary endpoint returns compact UI fields', async () => {
     '',
     '## Manual Overrides',
     '- 说话像温柔男主播。',
+    '',
+    '## Profile Quote',
+    '- 真正要紧的歌，通常会在你安静下来的时候出现。',
     '',
     '## Taste',
     '- R&B',
@@ -204,4 +225,25 @@ test('summary endpoint returns compact UI fields', async () => {
   assert.deepEqual(summary.tags.slice(0, 2), ['R&B', '陶喆']);
   assert.equal(summary.topArtists[0], '陶喆');
   assert.equal(summary.totalPlays, 5);
+  assert.equal(summary.philosophy, '真正要紧的歌，通常会在你安静下来的时候出现。');
+});
+
+test('summary profile quote does not expose manual rules as philosophy', async () => {
+  const userDir = makeUserDir();
+  fs.writeFileSync(path.join(userDir, 'memory.profile.md'), [
+    '# Claudio Memory Profile',
+    '',
+    '## Manual Overrides',
+    '- 只有用户明确有放歌、搜歌、推歌需求时才推歌。',
+    '',
+    '## Taste',
+    '- R&B',
+    '',
+  ].join('\n'), 'utf8');
+
+  const service = createMemoryService({ userDir });
+  const summary = await service.getSummary();
+
+  assert.notEqual(summary.philosophy, '只有用户明确有放歌、搜歌、推歌需求时才推歌。');
+  assert.equal(summary.philosophy, '只在你真的想听歌的时候，把那首歌递到你手边。');
 });

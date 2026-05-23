@@ -59,7 +59,6 @@
 - Bruno Mars
 ### 语言偏好
 - 日语/中文 > 英文 > 韩语
-
 ## Dislikes And Boundaries
 - 不要为了显得懂音乐而百科式解释。
 - 过于吵闹的电子舞曲
@@ -67,8 +66,7 @@
 - 重型摇滚/金属
 
 ## Mood
-- 怀旧
-
+- 烦躁怀旧
 ## Routines
 # 我的作息
 
@@ -82,6 +80,13 @@
 ## Listening Stats
 - 由播放记录自动生成。
 
+## Liked Song Signals
+- 2026-05-23 Lover Girl - Laufey | weak song-level signal
+- 2026-05-23 Just the Two of Us - Grover Washington, Jr., Bill Withers | weak song-level signal
+- 2026-05-23 是但求其爱 - 陈奕迅 | weak style signals: 华语 R&B / soul
+- 2026-05-23 美梦 - 周公 | weak song-level signal
+- 2026-05-22 坐火车到传说中的湘南海岸 - 陈绮贞 | weak song-level signal
+- 旧版红心曾把单曲直接归因到歌手；已降级为弱信号，后续只作为风格推断参考，不直接定义固定品味。
 ## Learned Preferences
 - 由喜欢、播放、跳过和搜索行为自动生成。
 
@@ -90,3 +95,6 @@
 
 ## Search And Recommendation Rules
 - 搜歌先提取歌手、歌名或场景核心词，再查找可播放歌曲。
+
+## Profile Quote
+- 只在你真的想听歌的时候，把那首歌递到你手边。

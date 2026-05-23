@@ -30,12 +30,22 @@ export const queueRepo = {
 
   async removeFirst(): Promise<QueueItem | undefined> {
     const db = await getDb();
-    const res = db.exec('SELECT * FROM queue ORDER BY position LIMIT 1');
-    if (!res.length || !res[0].values.length) return undefined;
-    const row = res[0].values[0];
-    db.run('DELETE FROM queue WHERE position = ?', [row[0]]);
-    saveDb();
-    return { position: row[0] as number, song_id: row[1] as string, song_name: row[2] as string, artist: row[3] as string, url: row[4] as string, duration_ms: row[5] as number };
+    db.run('BEGIN');
+    try {
+      const res = db.exec('SELECT * FROM queue ORDER BY position LIMIT 1');
+      if (!res.length || !res[0].values.length) {
+        db.run('COMMIT');
+        return undefined;
+      }
+      const row = res[0].values[0];
+      db.run('DELETE FROM queue WHERE position = ?', [row[0]]);
+      db.run('COMMIT');
+      saveDb();
+      return { position: row[0] as number, song_id: row[1] as string, song_name: row[2] as string, artist: row[3] as string, url: row[4] as string, duration_ms: row[5] as number };
+    } catch {
+      db.run('ROLLBACK');
+      return undefined;
+    }
   },
 
   async size(): Promise<number> {

@@ -197,14 +197,15 @@ export function ProfileCard({ open, onToggle }: Props) {
               <div className="profile-card-stats">
                 <div><small>收听时长</small><strong>{profile?.totalHours ? Math.floor(profile.totalHours) + 'H' : '0H'}</strong></div>
                 <div><small>播放次数</small><strong>{profile?.totalPlays || 0}</strong></div>
-                <div><small>心情</small><strong>{profile?.mood ? profile.mood.slice(0, 4) : '···'}</strong></div>
+                <div><small>心情</small><strong>{profile?.mood ? profile.mood.slice(0, 4) : '--'}</strong></div>
               </div>
 
               {/* Editable tags */}
               <div className="profile-card-tags">
                 {tags.map(tag => (
                   <b key={tag} onClick={() => removeTag(tag)} title="点击删除">
-                    {tag} <span className="tag-x">×</span>
+                    <span className="tag-label">{tag}</span>
+                    <span className="tag-x">×</span>
                   </b>
                 ))}
                 {editingTag ? (
@@ -223,7 +224,7 @@ export function ProfileCard({ open, onToggle }: Props) {
                 ) : (
                   <b className="tag-add" onClick={() => setEditingTag(true)}>+</b>
                 )}
-                {saving && <span className="tag-saving">···</span>}
+                {saving && <span className="tag-saving">保存中</span>}
               </div>
 
               {profile?.philosophy ? (

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { getMusicAudioElement, usePlayerStore, Song } from '../stores/playerStore';
 import { useChatStore } from '../stores/chatStore';
 import { wsClient } from '../api/ws';
@@ -8,7 +9,7 @@ import { ProfileCard } from '../components/ProfileCard';
 const AI_AVATAR = '/avatars/codex.png';
 const USER_AVATAR = '/avatars/me.png';
 
-type AlignmentSegment = { text: string; start: number; end: number };
+type AlignmentSegment = { text: string; start: number; end: number; words?: AlignmentSegment[] };
 type NarrationMessage = {
   id: string;
   content: string;
@@ -58,29 +59,92 @@ function buildSentenceSegments(text: string, targetDuration = 0): AlignmentSegme
   });
 }
 
-function alignmentLooksSentenceLevel(aligned: AlignmentSegment[]): boolean {
-  if (!aligned.length) return false;
-  const averageLength = aligned.reduce((sum, segment) => sum + segment.text.length, 0) / aligned.length;
-  return averageLength >= 10 || aligned.some((segment) => /[。！？.!?；;]/.test(segment.text));
+/**
+ * Split text into word-like tokens.  Each CJK character is its own token;
+ * Latin / number runs are kept together; everything else is a token.
+ * NEVER use provider alignment text — only split the original say text.
+ */
+function tokenizeSentence(text: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/[一-鿿㐀-䶿]/.test(ch)) {
+      tokens.push(ch); // each CJK char is its own word-level token
+      i++;
+    } else if (/[a-zA-Z0-9]/.test(ch)) {
+      let j = i;
+      while (j < text.length && /[a-zA-Z0-9]/.test(text[j])) j++;
+      tokens.push(text.slice(i, j));
+      i = j;
+    } else {
+      tokens.push(ch); // punctuation / whitespace / symbol
+      i++;
+    }
+  }
+  return tokens.length ? tokens : [text];
 }
 
+/**
+ * Distribute a sentence's time range evenly across its tokens.
+ * Only the TIMING is estimated; the text is always from tokenizeSentence
+ * which splits the ORIGINAL say text — never from provider alignment.
+ */
+function estimateWords(sentence: AlignmentSegment): AlignmentSegment[] {
+  const tokens = tokenizeSentence(sentence.text);
+  if (tokens.length <= 1) return [];
+  const slot = (sentence.end - sentence.start) / tokens.length;
+  return tokens.map((t, i) => ({
+    text: t,
+    start: Math.round((sentence.start + i * slot) * 1000) / 1000,
+    end: Math.round((sentence.start + (i + 1) * slot) * 1000) / 1000,
+  }));
+}
+
+/**
+ * Build the two-layer subtitle structure:
+ *
+ *   sentences[i] = { text (from say), start, end, words[] (from say) }
+ *
+ * Provider alignment (Fish Audio) is ONLY used to rescale sentence-level
+ * start/end times into the provider's clock range.  It is NEVER used as
+ * a source of display text.
+ */
 function fitSegmentsToDuration(
   aligned: AlignmentSegment[],
-  fallbackText: string,
-  targetDuration: number,
+  sayText: string,
+  audioDurationSec: number,
 ): AlignmentSegment[] {
-  const source = alignmentLooksSentenceLevel(aligned)
-    ? aligned
-    : buildSentenceSegments(fallbackText, targetDuration);
-  const lastEnd = source.reduce((max, segment) => Math.max(max, segment.end), 0);
-  if (!targetDuration || !lastEnd) return source;
-  const scale = targetDuration / lastEnd;
-  if (Math.abs(1 - scale) < 0.03) return source;
-  return source.map((segment) => ({
-    ...segment,
-    start: Math.round(segment.start * scale * 1000) / 1000,
-    end: Math.round(segment.end * scale * 1000) / 1000,
-  }));
+  // Layer 1: sentences — always from say text
+  const sentences = buildSentenceSegments(sayText, audioDurationSec);
+
+  // Layer 2: if provider alignment exists, use its clock range to rescale
+  // sentence boundaries so the clock matches the actual audio playback.
+  if (aligned.length > 0) {
+    const pStart = aligned[0].start;
+    const pEnd = aligned[aligned.length - 1].end;
+    const pRange = pEnd - pStart;
+    if (pRange > 0) {
+      const totalW = sentences.reduce((sum, s) => sum + segmentWeight(s.text), 0) || 1;
+      let cursor = 0;
+      for (let i = 0; i < sentences.length; i++) {
+        const s = sentences[i];
+        const w = segmentWeight(s.text);
+        const slot = i === sentences.length - 1 ? pRange - cursor : (w / totalW) * pRange;
+        s.start = Math.round((pStart + cursor) * 1000) / 1000;
+        s.end = Math.round((pStart + cursor + Math.max(slot, 0.1)) * 1000) / 1000;
+        cursor += slot;
+      }
+    }
+  }
+
+  // Layer 3: words — always tokenized from sentence.text (original say).
+  // Provider alignment NEVER contributes display text.
+  for (const s of sentences) {
+    s.words = estimateWords(s);
+  }
+
+  return sentences;
 }
 
 function buildFallbackSegments(text: string, targetDuration = 0): AlignmentSegment[] {
@@ -94,6 +158,38 @@ function scrollTranscriptTo(transcript: HTMLDivElement, top: number) {
     return;
   }
   transcript.scrollTop = nextTop;
+}
+
+function clamp01(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function trackPctFromClientX(track: HTMLElement, clientX: number) {
+  const rect = track.getBoundingClientRect();
+  return clamp01((clientX - rect.left) / Math.max(1, rect.width));
+}
+
+function startTrackDrag(e: ReactPointerEvent<HTMLDivElement>, onChange: (pct: number) => void) {
+  e.preventDefault();
+  const track = e.currentTarget;
+  const pointerId = e.pointerId;
+  const update = (clientX: number) => onChange(trackPctFromClientX(track, clientX));
+
+  update(e.clientX);
+  track.setPointerCapture?.(pointerId);
+
+  const onMove = (event: PointerEvent) => update(event.clientX);
+  const cleanup = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', cleanup);
+    window.removeEventListener('pointercancel', cleanup);
+    track.releasePointerCapture?.(pointerId);
+  };
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', cleanup);
+  window.addEventListener('pointercancel', cleanup);
 }
 
 function SpeakingOverlay({
@@ -144,10 +240,59 @@ function SpeakingOverlay({
     const fallbackText = narration?.content || 'It is late on a Monday, and here is a song that moves with your breath. Back in 1971, David Gates picked up a nylon-string guitar and let every line end in a whisper. You will feel yourself lift off the ground a little.';
     return fitSegmentsToDuration(aligned, fallbackText, duration);
   }, [narration, duration]);
-  const activeIndex = segments.findIndex((s) => time >= s.start && time < s.end);
-  const currentIndex = activeIndex >= 0 && activeIndex < segments.length
-    ? activeIndex
-    : (time > 0 && segments.length ? segments.length - 1 : -1);
+  const sentenceIdx = segments.findIndex((s) => time >= s.start && time < s.end);
+  const currentIndex = sentenceIdx >= 0 ? sentenceIdx
+    : time <= 0 ? 0
+    : segments.length > 0 ? segments.length - 1
+    : -1;
+
+  // Current sentence's words
+  const currentWords: AlignmentSegment[] = currentIndex >= 0 ? (segments[currentIndex]?.words || []) : [];
+
+  // Clamped word index: never -1, never flickers away
+  const currentWordIndex = (() => {
+    if (!currentWords.length) return -1;
+    // Find last word where time >= word.start
+    let idx = -1;
+    for (let i = 0; i < currentWords.length; i++) {
+      if (time >= currentWords[i].start) idx = i;
+    }
+    if (idx < 0) return 0;                             // before first word → first
+    if (time >= currentWords[currentWords.length - 1].end) return currentWords.length - 1; // past last → last
+    return idx;
+  })();
+
+  // ── highlight pill ──
+  const [pillRect, setPillRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const currentWordKey = currentIndex >= 0 && currentWordIndex >= 0 && currentWords[currentWordIndex]
+    ? `${currentIndex}-${currentWordIndex}`
+    : '';
+
+  useEffect(() => {
+    if (!open || !currentWordKey || currentIndex < 0) { setPillRect(null); return; }
+    const lineEl = transcriptRef.current?.querySelector<HTMLElement>('.speaking-line.is-current');
+    if (!lineEl) { setPillRect(null); return; }
+    const wordEl = lineEl.querySelector<HTMLElement>(`[data-word-key="${currentWordKey}"]`);
+    if (!wordEl) { setPillRect(null); return; }
+    const lineRect = lineEl.getBoundingClientRect();
+    const wordRect = wordEl.getBoundingClientRect();
+    setPillRect({
+      x: wordRect.left - lineRect.left,
+      y: wordRect.top - lineRect.top,
+      w: wordRect.width,
+      h: wordRect.height,
+    });
+  }, [open, currentWordKey, currentIndex, narrationTimeMs]);
+
+  const currentWord = currentWordIndex >= 0 ? currentWords[currentWordIndex] : null;
+
+  // debug log
+  if (open && currentWord) {
+    console.log(
+      `[sub] time=${time.toFixed(2)}s sentence=${currentIndex} word=${currentWordIndex} ` +
+      `"${currentWord.text}" [${currentWord.start.toFixed(2)}-${currentWord.end.toFixed(2)}]`
+    );
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -214,31 +359,43 @@ function SpeakingOverlay({
           ctx.clearRect(0, 0, rect.width, rect.height);
           const now = performance.now() / 1000;
           const count = Math.max(72, Math.floor(rect.width / 5.4));
-          const groupCount = 24;
-          const groupEnergies = Array.from({ length: groupCount }, (_, groupIndex) => {
-            const start = Math.floor((groupIndex / groupCount) * data.length);
-            const end = Math.max(start + 1, Math.floor(((groupIndex + 1) / groupCount) * data.length));
+          const groupCount = 28;
+          const minBin = Math.min(2, Math.max(0, data.length - 1));
+          const maxBin = Math.max(minBin + 1, Math.floor(data.length * 0.72));
+          const readEnergy = (startRatio: number, endRatio: number) => {
+            const start = Math.floor(minBin + Math.pow(startRatio, 1.72) * (maxBin - minBin));
+            const end = Math.max(start + 1, Math.floor(minBin + Math.pow(endRatio, 1.72) * (maxBin - minBin)));
             let sum = 0;
             for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
               sum += data[sampleIndex] || 0;
             }
             const raw = analyser ? sum / Math.max(1, end - start) / 255 : 0;
-            return Math.min(1, Math.pow(raw, 0.62) * 1.85);
+            return Math.min(1, Math.pow(raw, 0.58) * 1.95);
+          };
+          const groupEnergies = Array.from({ length: groupCount }, (_, groupIndex) => {
+            return readEnergy(groupIndex / groupCount, (groupIndex + 1) / groupCount);
           });
+          const bassEnergy = readEnergy(0.02, 0.18);
+          const midEnergy = readEnergy(0.18, 0.56);
+          const edgeDrive = Math.max(0.26, bassEnergy * 0.62 + midEnergy * 0.38);
           const baseLevel = musicPlaying ? 0.32 : 0.28;
           const gap = rect.width / count;
           const barW = Math.max(2, gap * 0.48);
           for (let i = 0; i < count; i++) {
-            const position = (i / Math.max(1, count - 1)) * (groupCount - 1);
+            const visualPosition = i / Math.max(1, count - 1);
+            const musicalPosition = Math.pow(visualPosition, 0.82) * (groupCount - 1);
+            const position = Math.min(groupCount - 1, musicalPosition);
             const leftGroup = Math.floor(position);
             const rightGroup = Math.min(groupCount - 1, leftGroup + 1);
             const mix = position - leftGroup;
-            const groupedEnergy = groupEnergies[leftGroup] * (1 - mix) + groupEnergies[rightGroup] * mix;
+            const directEnergy = groupEnergies[leftGroup] * (1 - mix) + groupEnergies[rightGroup] * mix;
+            const edgeWeight = Math.pow(Math.abs(visualPosition - 0.5) * 2, 1.45);
+            const groupedEnergy = directEnergy * (1 - edgeWeight * 0.42) + edgeDrive * edgeWeight * 0.58;
             const phrase = Math.floor(i / 5);
             const baseWave = 0.82 + Math.sin(phrase * 0.55 + now * 2.1) * 0.11;
             const localWave = 0.94 + Math.sin(i * 0.18 + now * 1.35) * 0.055;
-            const shape = 0.45 + 0.55 * Math.pow(Math.sin((i / count) * Math.PI), 0.9);
-            const groupedPulse = 0.94 + Math.sin(Math.floor(i / 6) * 0.72 + now * 2.35) * 0.08;
+            const shape = 0.66 + 0.34 * Math.pow(Math.sin(visualPosition * Math.PI), 0.85);
+            const groupedPulse = 0.94 + Math.sin(Math.floor(i / 6) * 0.72 + now * (2.05 + edgeDrive * 1.3)) * (0.055 + edgeDrive * 0.085);
             const energy = Math.max(baseLevel, groupedEnergy) * baseWave * localWave * groupedPulse;
             const h = Math.max(34, energy * rect.height * shape);
             const x = i * gap;
@@ -315,22 +472,58 @@ function SpeakingOverlay({
           </div>
           <div className="speaking-progress">
             <button onClick={onToggleMusic}>{musicPlaying ? 'Ⅱ' : '▶'}</button>
-            <div className="speaking-track" onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              onSeekMusic((e.clientX - r.left) / r.width);
-            }}>
+            <div
+              className="speaking-track"
+              onPointerDown={(e) => startTrackDrag(e, onSeekMusic)}
+              role="slider"
+              aria-label="Music progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(musicPct)}
+            >
               <span style={{ width: `${musicPct}%` }} />
             </div>
             <time>{formatTime(musicSeconds)} / {formatTime(musicDurationSeconds || 0)}</time>
           </div>
 
           <div className="speaking-transcript" ref={transcriptRef}>
-            {segments.map((segment, i) => (
-              <div key={`${segment.start}-${segment.text}-${i}`} className={`speaking-line ${i < currentIndex ? 'is-read' : i === currentIndex ? 'is-current' : 'is-future'}`}>
-                <div className="speaking-line-meta">Claudio • {formatTime(segment.start)}</div>
-                <p>{segment.text}</p>
-              </div>
-            ))}
+            {segments.map((segment, i) => {
+              const isCurrentSentence = i === currentIndex;
+              const hasWords = !!segment.words?.length;
+              return (
+                <div key={`${segment.start}-${segment.text}-${i}`} className={`speaking-line ${i < currentIndex ? 'is-read' : isCurrentSentence ? 'is-current' : 'is-future'}`}>
+                  <div className="speaking-line-meta">Claudio • {formatTime(segment.start)}</div>
+                  {isCurrentSentence && pillRect && (
+                    <div
+                      className="highlight-pill"
+                      style={{
+                        transform: `translate3d(${pillRect.x}px, ${pillRect.y}px, 0)`,
+                        width: pillRect.w,
+                        height: pillRect.h,
+                      }}
+                    />
+                  )}
+                  {hasWords ? (
+                    <p>
+                      {segment.words!.map((w, wi) => {
+                        const said = time >= w.end;
+                        const current = !said && time >= w.start;
+                        const cls = isCurrentSentence
+                          ? `word ${said ? 'said' : current ? 'current' : 'future'}`
+                          : 'word word-idle';
+                        return (
+                          <span key={wi} className={cls}>
+                            {w.text}
+                          </span>
+                        );
+                      })}
+                    </p>
+                  ) : (
+                    <p>{segment.text}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="speaking-footer">
@@ -342,6 +535,24 @@ function SpeakingOverlay({
       </div>
     </div>
   );
+}
+
+/**
+ * Parse and format a message timestamp for display.
+ * ALL stored timestamps are UTC:
+ *   - ISO 8601: "2026-05-23T14:30:00.000Z"
+ *   - SQLite legacy: "2026-05-22 02:19:56" (UTC but no TZ indicator)
+ * Without Z, new Date() parses as local time — off by UTC offset.
+ * Never returns "Invalid Date".
+ */
+function formatMsgTime(raw: string): string {
+  if (!raw) return '--:--';
+  let iso = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  // SQLite datetime('now') is UTC — add Z if missing
+  if (!iso.endsWith('Z')) iso += 'Z';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '--:--';
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
 export default function HomePage() {
@@ -377,7 +588,7 @@ export default function HomePage() {
     wsClient.on('dj_message', (data: any) => {
       c.addMessage({
         id: data.id || (() => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36)+Math.random().toString(36).slice(2); } })(), role: 'dj', content: data.say,
-        ttsUrl: data.ttsUrl, alignment: data.alignment, status: 'done', played: false, timestamp: new Date().toISOString(),
+        ttsUrl: data.ttsUrl, alignment: data.alignment, status: 'done', played: false, timestamp: data.timestamp || new Date().toISOString(),
       });
 
       if (data.songs?.length) {
@@ -556,10 +767,15 @@ export default function HomePage() {
             </button>
           )}
           <span className="vol-label">VOL</span>
-          <div className="vol-track" onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            p.setVolume((e.clientX - r.left) / r.width);
-          }}>
+          <div
+            className="vol-track"
+            onPointerDown={(e) => startTrackDrag(e, p.setVolume)}
+            role="slider"
+            aria-label="Volume"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(p.volume * 100)}
+          >
             <div className="vol-fill" style={{ width: `${p.volume * 100}%` }} />
           </div>
         </div>
@@ -567,10 +783,15 @@ export default function HomePage() {
 
       {/* Progress bar */}
       <div className="progress-bar">
-        <div className="progress-line" onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          p.seekTo((e.clientX - r.left) / r.width);
-        }}>
+        <div
+          className="progress-line"
+          onPointerDown={(e) => startTrackDrag(e, p.seekTo)}
+          role="slider"
+          aria-label="Music progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(pct)}
+        >
           <div className="progress-fill" style={{ width: `${pct}%` }} />
         </div>
         <div className="progress-times">
@@ -642,7 +863,7 @@ export default function HomePage() {
                   }}>REPLAY</button>
                 )}
                 <div className="chat-time">
-                  {new Date(m.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                  {formatMsgTime(m.timestamp)}
                 </div>
               </div>
             </div>
@@ -651,7 +872,7 @@ export default function HomePage() {
 
         <div className="chat-input-bar">
           <div className="chat-input-row">
-            <button className="btn-aidj" onClick={() => { p.preparePlayback(); c.sendAidj('来点音乐'); }} disabled={c.isStreaming}>
+            <button className="btn-aidj" onClick={() => { c.sendAidj('来点音乐'); }} disabled={c.isStreaming}>
               AIDJ
             </button>
             <input className="chat-input" placeholder={listening ? 'Listening...' : 'Say something to the DJ...'}

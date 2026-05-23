@@ -14,13 +14,25 @@ import { registerPlaylistRoutes } from './routes/playlist.js';
 import { registerProfileRoutes } from './routes/profile.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerLyricRoutes } from './routes/lyric.js';
-import { registerWebSocket } from './ws.js';
-import { startScheduler, setBroadcast } from './services/scheduler.service.js';
+import { registerWebSocket, getClientCount } from './ws.js';
+import { startScheduler, stopScheduler, setBroadcast } from './services/scheduler.service.js';
 import { broadcast } from './ws.js';
+import { queueRepo } from './db/queue.repo.js';
+import { getActiveStreamCount } from './routes/stream.js';
+import { installProcessHandlers, setMetricGetters, startPeriodicLogs, stopPeriodicLogs, logHealthReport } from './observability.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── Observability: must be installed before anything else ──
+installProcessHandlers();
+setMetricGetters({
+  getWsClients: () => getClientCount(),
+  getQueueSize: async () => queueRepo.size(),
+  getActiveStreams: () => getActiveStreamCount(),
+});
+startPeriodicLogs();
 
 // Initialize DB before starting server
 await getDb();
@@ -50,6 +62,18 @@ registerLyricRoutes(app);
 
 setBroadcast(broadcast);
 startScheduler();
+
+const gracefulShutdown = async (signal: string) => {
+  console.log(`\n[Server] ${signal} received, shutting down...`);
+  stopScheduler();
+  stopPeriodicLogs();
+  await logHealthReport();
+  await app.close();
+  process.exit(0);
+};
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 try {
   await app.listen({ port: config.PORT, host: config.HOST });

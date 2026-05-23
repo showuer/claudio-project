@@ -1,7 +1,10 @@
 import { config } from '../config.js';
 
 const BASE = 'http://localhost:3000';
-const COOKIE = config.NCM_COOKIE || '';
+
+function getCookie(): string {
+  return config.NCM_COOKIE || '';
+}
 
 export interface SearchResult {
   id: string; name: string; artist: string; album: string; duration: number;
@@ -18,7 +21,8 @@ async function fetchNcm(path: string, params?: Record<string, string>): Promise<
       for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     }
     // Pass cookie for VIP full-length songs
-    if (COOKIE) url.searchParams.set('cookie', COOKIE);
+    const cookie = getCookie();
+    if (cookie) url.searchParams.set('cookie', cookie);
     const resp = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
     if (!resp.ok) throw new Error(`NCM ${resp.status}`);
     return resp.json();

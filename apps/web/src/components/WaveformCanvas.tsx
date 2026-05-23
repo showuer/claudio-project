@@ -15,7 +15,7 @@ export default function WaveformCanvas({ active }: { active: boolean }) {
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const w = rect.width;
     const h = rect.height;

@@ -16,6 +16,27 @@ let narrationAudio: HTMLAudioElement | null = null;
 let pendingPlaylistIntroUrl = '';
 let pendingPlaylistStartIndex = -1;
 
+// ── Narration volume boost via Web Audio GainNode ──────────────
+// HTMLAudioElement.volume is capped at 1.0, but TTS MP3 files are
+// often mastered quieter than music. A GainNode lets us amplify
+// narration beyond the browser volume ceiling.
+let narrationAudioCtx: AudioContext | null = null;
+const NARRATION_GAIN = 1.5;
+
+function applyNarrationGain(a: HTMLAudioElement) {
+  if (!narrationAudioCtx) {
+    narrationAudioCtx = new AudioContext();
+  }
+  if (narrationAudioCtx.state === 'suspended') {
+    narrationAudioCtx.resume();
+  }
+  const source = narrationAudioCtx.createMediaElementSource(a);
+  const gain = narrationAudioCtx.createGain();
+  gain.gain.value = NARRATION_GAIN;
+  source.connect(gain);
+  gain.connect(narrationAudioCtx.destination);
+}
+
 function getMusicStreamUrl(songId: string) {
   return `/api/stream/${encodeURIComponent(songId)}`;
 }
@@ -55,7 +76,21 @@ function ensureAudio() {
     audio.volume = 0.72;
     audio.addEventListener('error', () => {
       errorCount++;
-      usePlayerStore.setState({ musicPlaying: false });
+      if (errorCount <= 2) {
+        // Re-fetch URL and retry — NCM URLs may expire
+        const state = usePlayerStore.getState();
+        const song = state.playlist[state.currentIndex];
+        if (song?.song_id && audio) {
+          const retryUrl = getMusicStreamUrl(song.song_id) + '?retry=' + errorCount;
+          const pos = audio.currentTime || 0;
+          audio.src = retryUrl;
+          audio.currentTime = pos;
+          audio.play().catch(() => {});
+        }
+      } else {
+        usePlayerStore.setState({ musicPlaying: false });
+        errorCount = 0;
+      }
     });
     audio.addEventListener('ended', () => {
       usePlayerStore.getState().nextTrack();
@@ -77,6 +112,34 @@ export function getNarrationAudioElement(): HTMLAudioElement | null {
   return narrationAudio;
 }
 
+// ── Ducking state (prevents double-duck and missed restore) ──
+let duckedOriginalVolume: number | null = null;
+
+function startDucking(duckRatio: number) {
+  if (duckedOriginalVolume !== null) return; // already ducking
+  const state = usePlayerStore.getState();
+  duckedOriginalVolume = audio ? audio.volume : state.volume;
+  const ducked = (state.volume * duckRatio);
+  if (audio && !audio.paused) {
+    fadeMusicTo(ducked, 500);
+  }
+}
+
+function restoreDucking(onDone?: () => void) {
+  if (duckedOriginalVolume === null) { onDone?.(); return; }
+  const target = duckedOriginalVolume;
+  duckedOriginalVolume = null;
+  if (audio) {
+    fadeMusicTo(target, 3000, () => {
+      usePlayerStore.setState({ djNarrating: false, narrationPlaying: false });
+      onDone?.();
+    });
+  } else {
+    usePlayerStore.setState({ djNarrating: false, narrationPlaying: false });
+    onDone?.();
+  }
+}
+
 function stopNarrationAudio(clearState = true) {
   narrationSession++;
   if (narrationTimer) {
@@ -88,15 +151,8 @@ function stopNarrationAudio(clearState = true) {
     narrationAudio.src = '';
     if (clearState) narrationAudio = null;
   }
-  if (clearState) {
-    usePlayerStore.setState({
-      narrationUrl: '',
-      narrationTimeMs: 0,
-      narrationDurationMs: 0,
-      narrationPlaying: false,
-      djNarrating: false,
-    });
-  }
+  // Always restore music when narration stops for any reason
+  restoreDucking();
 }
 
 function startNarrationClock(session: number) {
@@ -290,6 +346,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (!narrationAudio) {
       narrationAudio = new Audio();
       narrationAudio.volume = 1;
+      applyNarrationGain(narrationAudio);
     }
     narrationAudio.load();
   },
@@ -305,8 +362,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (narrationAudio && narrationAudio.src.endsWith(narrationUrl) && !narrationAudio.paused) {
       return;
     }
-    stopNarrationAudio(false);
-    narrationAudio = narrationAudio || new Audio();
+    stopNarrationAudio(true);
+    narrationAudio = new Audio();
+    applyNarrationGain(narrationAudio);
     narrationAudio.src = narrationUrl;
     narrationAudio.volume = 1;
     const session = ++narrationSession;
@@ -314,17 +372,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     let crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
     let musicStarted = false;
 
-    const duckRatio = 0.05;
-    const duckedVolume = savedVolume * duckRatio;
-
-    // Start music 7s before narration ends at volume 0, fade up to ducked volume while narrating
+    // Start music 7s before narration ends at volume 0, fade up while narrating
     const startMusicCrossfade = () => {
       if (musicStarted || startIndex === undefined) return;
       musicStarted = true;
       get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
       if (audio) {
         audio.volume = 0;
-        fadeMusicTo(duckedVolume, 3000);
+        const ducked = savedVolume * 0.05;
+        fadeMusicTo(ducked, 3000);
       }
     };
 
@@ -338,68 +394,29 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     };
 
-    narrationAudio.onended = () => {
+    const onNarrationDone = () => {
       if (session !== narrationSession) return;
       if (crossfadeTimer) clearTimeout(crossfadeTimer);
-      if (narrationTimer) {
-        clearInterval(narrationTimer);
-        narrationTimer = null;
-      }
-      narrationAudio = null;
-      if (!musicStarted && startIndex !== undefined) {
-        // Narration too short — start music directly, opening is the intro
-        musicStarted = true;
-        get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
-        if (audio) {
-          audio.volume = 0;
-          fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
-        } else {
-          set({ djNarrating: false, narrationPlaying: false });
-        }
-      } else if (musicStarted && audio) {
-        // Music is at ducked volume — fade up to full
-        fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
-      } else if (audio && !audio.paused) {
-        fadeMusicTo(savedVolume, 3000, () => set({ djNarrating: false, narrationPlaying: false }));
-      } else {
-        set({ djNarrating: false, narrationPlaying: false });
-      }
-    };
-    narrationAudio.onerror = () => {
-      if (session !== narrationSession) return;
-      if (crossfadeTimer) clearTimeout(crossfadeTimer);
-      if (narrationTimer) {
-        clearInterval(narrationTimer);
-        narrationTimer = null;
-      }
+      if (narrationTimer) { clearInterval(narrationTimer); narrationTimer = null; }
       narrationAudio = null;
       if (!musicStarted && startIndex !== undefined) {
         musicStarted = true;
         get().playTrack(startIndex, { skipIntro: true, keepNarration: true });
-        if (audio) {
-          audio.volume = 0;
-          fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
-        } else {
-          set({ djNarrating: false, narrationPlaying: false });
-        }
-      } else if (musicStarted && audio) {
-        fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
-      } else if (audio && !audio.paused) {
-        fadeMusicTo(savedVolume, 2000, () => set({ djNarrating: false, narrationPlaying: false }));
-      } else {
-        set({ djNarrating: false, narrationPlaying: false });
+        if (audio) audio.volume = 0;
       }
+      // restoreDucking handles all volume recovery + djNarrating/narrationPlaying
+      restoreDucking();
     };
+
+    narrationAudio.onended = onNarrationDone;
+    narrationAudio.onerror = onNarrationDone;
 
     set({ djNarrating: true, narrationUrl, narrationTimeMs: 0, narrationDurationMs: 0, narrationPlaying: true });
     startNarrationClock(session);
-    // Duck currently playing music immediately when narration starts
-    if (audio && !audio.paused) {
-      fadeMusicTo(duckedVolume, 500);
-    }
+    startDucking(0.05);
     narrationAudio.play().catch(() => {
       if (session !== narrationSession) return;
-      set({ djNarrating: false, narrationPlaying: false });
+      restoreDucking();
       if (startIndex !== undefined) get().playTrack(startIndex, { skipIntro: true });
     });
   },
@@ -409,9 +426,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (narrationAudio.paused) {
       narrationAudio.play().catch(() => {});
       set({ narrationPlaying: true, djNarrating: true });
+      startDucking(0.05);
     } else {
       narrationAudio.pause();
       set({ narrationPlaying: false });
+      restoreDucking();
     }
   },
 

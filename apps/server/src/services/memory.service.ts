@@ -38,6 +38,7 @@ export interface ClaudioMemoryService {
   getSummary(): Promise<MemorySummary>;
   updateStyleTags(tags: string[]): Promise<{ saved: true; tags: string[] }>;
   addTastePreference(preference: string): Promise<{ saved: true; added: boolean; preference: string }>;
+  recordLikedSongSignal(song: { id: string; name: string; artist?: string }): Promise<{ saved: true; signals: string[] }>;
   updateMood(mood: string): Promise<{ saved: true; mood: string }>;
   getSearchHints(): Promise<SearchHints>;
 }
@@ -51,11 +52,13 @@ const PROFILE_FILE = 'memory.profile.md';
 const SECTION_NAMES = [
   'Identity',
   'Manual Overrides',
+  'Profile Quote',
   'Taste',
   'Dislikes And Boundaries',
   'Mood',
   'Routines',
   'Listening Stats',
+  'Liked Song Signals',
   'Learned Preferences',
   'Recent Context',
   'Search And Recommendation Rules',
@@ -72,6 +75,16 @@ function readSafe(filePath: string, fallback = ''): string {
 function writeSafe(filePath: string, content: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, 'utf8');
+}
+
+// Serialize read-modify-write operations on the profile file to prevent races.
+let profileLock: Promise<void> = Promise.resolve();
+
+function withProfileLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = profileLock;
+  let release: () => void;
+  profileLock = new Promise<void>((resolve) => { release = resolve; });
+  return prev.then(fn).finally(() => release!());
 }
 
 function cleanBullet(line: string): string {
@@ -126,6 +139,17 @@ function appendNestedPreference(taste: string, preference: string): string {
   return `${taste.trimEnd()}\n\n### 风格偏好\n- ${clean}`;
 }
 
+function inferSongSignals(name: string, artist = ''): string[] {
+  const text = `${name} ${artist}`.toLowerCase();
+  const signals: string[] = [];
+  if (/陶喆|方大同|林俊杰|陈奕迅|袁娅维|tia|r&b|soul/.test(text)) signals.push('华语 R&B / soul');
+  if (/radwimps|aimer|spyair|yoasobi|宇多田|j-pop|jpop/.test(text)) signals.push('日系摇滚/流行');
+  if (/kendrick|drake|j\.?\s*cole|tyler|pusha|jid|rap|hip.?hop|说唱/.test(text)) signals.push('hip-hop / rap');
+  if (/kali uchis|bruno mars|justin timberlake|funk|disco|bootsy|earth, wind/.test(text)) signals.push('funk / groove pop');
+  if (/lofi|nujabes|chill|ambient|piano/.test(text)) signals.push('低能量 / chill');
+  return Array.from(new Set(signals)).slice(0, 4);
+}
+
 function uniq(items: string[], limit = 12): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -146,6 +170,19 @@ function normalizeTag(tag: string): string {
   return trimmed;
 }
 
+function appendLikedSongSignal(profile: string, song: { id: string; name: string; artist?: string }) {
+  const signals = inferSongSignals(song.name, song.artist);
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const body = bulletLines(extractSection(profile, 'Liked Song Signals')).filter((item) => !/^(无|暂无|none)$/i.test(item));
+  const signalText = signals.length ? ` | weak style signals: ${signals.join(', ')}` : ' | weak song-level signal';
+  const line = `${timestamp} ${song.name}${song.artist ? ` - ${song.artist}` : ''}${signalText}`;
+  const next = uniq([line, ...body.filter((item) => !item.includes(`${song.name} - ${song.artist || ''}`))], 40);
+  return {
+    profile: replaceSection(profile, 'Liked Song Signals', next.map((item) => `- ${item}`).join('\n')),
+    signals,
+  };
+}
+
 function extractSection(content: string, name: string): string {
   const match = content.match(new RegExp(`(?:^|\\n)## ${name}\\n([\\s\\S]*?)(?=\\n## |$)`));
   return match ? match[1].trim() : '';
@@ -158,6 +195,13 @@ function replaceSection(content: string, name: string, body: string): string {
   return `${content.trimEnd()}\n\n${section}`.trimEnd() + '\n';
 }
 
+function defaultSectionBody(section: string): string {
+  if (section === 'Profile Quote') {
+    return '- 只在你真的想听歌的时候，把那首歌递到你手边。';
+  }
+  return '- 无';
+}
+
 function ensureSections(content: string): string {
   let next = demoteUnknownLevelTwoHeadings(content).trim() || '# Claudio Memory Profile';
   if (!next.startsWith('# Claudio Memory Profile')) {
@@ -165,7 +209,7 @@ function ensureSections(content: string): string {
   }
   for (const section of SECTION_NAMES) {
     if (!new RegExp(`^## ${section}\\n`, 'm').test(next)) {
-      next = `${next.trimEnd()}\n\n## ${section}\n- 无\n`;
+      next = `${next.trimEnd()}\n\n## ${section}\n${defaultSectionBody(section)}\n`;
     }
   }
   return next.trimEnd() + '\n';
@@ -226,6 +270,7 @@ function buildPromptSummary(profile: string, stats: MemoryStats, mode: MemoryMod
   const avoid = extractSection(profile, 'Dislikes And Boundaries');
   const mood = extractSection(profile, 'Mood');
   const routines = extractSection(profile, 'Routines');
+  const likedSignals = extractSection(profile, 'Liked Song Signals');
   const recent = extractSection(profile, 'Recent Context');
   const rules = extractSection(profile, 'Search And Recommendation Rules');
   const top = stats.topArtists.slice(0, 6).map((a) => `${a.artist}(${a.count})`).join('、') || '暂无';
@@ -250,6 +295,9 @@ function buildPromptSummary(profile: string, stats: MemoryStats, mode: MemoryMod
     'Learned Listening Pattern:',
     `- Total plays: ${stats.totalPlays}`,
     `- Top artists: ${top}`,
+    '',
+    'Liked Song Signals (weak evidence only; do not define fixed taste from one like):',
+    likedSignals || '- 无',
     '',
     'Avoid:',
     avoid || '- 无',
@@ -313,7 +361,10 @@ export function createMemoryService(options?: {
       topArtists: stats.topArtists.slice(0, 6).map((a) => a.artist),
       mood: firstMeaningfulLine(extractSection(profile, 'Mood'), ''),
       copy: firstMeaningfulLine(identity, 'Your private AI DJ.'),
-      philosophy: firstMeaningfulLine(manual, ''),
+      philosophy: firstMeaningfulLine(
+        extractSection(profile, 'Profile Quote'),
+        '只在你真的想听歌的时候，把那首歌递到你手边。',
+      ),
       totalHours: stats.totalHours || 0,
       totalPlays: stats.totalPlays || 0,
       avoid,
@@ -322,38 +373,57 @@ export function createMemoryService(options?: {
   }
 
   async function updateStyleTags(tags: string[]) {
-    const clean = uniq(tags.map(normalizeTag).filter(Boolean), 12);
-    const profile = await loadProfile();
-    const body = clean.length > 0 ? clean.map((tag) => `- ${tag}`).join('\n') : '- 有情绪连接的音乐';
-    writeSafe(profilePath, replaceSection(profile, 'Taste', body));
-    return { saved: true as const, tags: clean };
+    return withProfileLock(async () => {
+      const clean = uniq(tags.map(normalizeTag).filter(Boolean), 12);
+      const profile = await loadProfile();
+      const body = clean.length > 0 ? clean.map((tag) => `- ${tag}`).join('\n') : '- 有情绪连接的音乐';
+      writeSafe(profilePath, replaceSection(profile, 'Taste', body));
+      return { saved: true as const, tags: clean };
+    });
   }
 
   async function addTastePreference(preference: string) {
-    const clean = preference.trim();
-    if (!clean) return { saved: true as const, added: false, preference: clean };
-    const profile = await loadProfile();
-    const taste = extractSection(profile, 'Taste');
-    const nextTaste = appendNestedPreference(taste, clean);
-    if (nextTaste === taste) return { saved: true as const, added: false, preference: clean };
-    writeSafe(profilePath, replaceSection(profile, 'Taste', nextTaste));
-    return { saved: true as const, added: true, preference: clean };
+    return withProfileLock(async () => {
+      const clean = preference.trim();
+      if (!clean) return { saved: true as const, added: false, preference: clean };
+      const profile = await loadProfile();
+      const taste = extractSection(profile, 'Taste');
+      const nextTaste = appendNestedPreference(taste, clean);
+      if (nextTaste === taste) return { saved: true as const, added: false, preference: clean };
+      writeSafe(profilePath, replaceSection(profile, 'Taste', nextTaste));
+      return { saved: true as const, added: true, preference: clean };
+    });
+  }
+
+  async function recordLikedSongSignal(song: { id: string; name: string; artist?: string }) {
+    return withProfileLock(async () => {
+      if (!song.id || !song.name) return { saved: true as const, signals: [] };
+      const profile = await loadProfile();
+      const next = appendLikedSongSignal(profile, song);
+      writeSafe(profilePath, next.profile);
+      return { saved: true as const, signals: next.signals };
+    });
   }
 
   async function updateMood(mood: string) {
-    const clean = mood.trim();
-    const profile = await loadProfile();
-    writeSafe(profilePath, replaceSection(profile, 'Mood', clean ? `- ${clean}` : '- 平静'));
-    return { saved: true as const, mood: clean };
+    return withProfileLock(async () => {
+      const clean = mood.trim();
+      const profile = await loadProfile();
+      writeSafe(profilePath, replaceSection(profile, 'Mood', clean ? `- ${clean}` : '- 平静'));
+      return { saved: true as const, mood: clean };
+    });
   }
 
   async function getSearchHints(): Promise<SearchHints> {
     const [profile, stats] = await Promise.all([loadProfile(), getStats()]);
     const taste = bulletLines(getTastePreferenceText(extractSection(profile, 'Taste')));
+    const weakSignals = bulletLines(extractSection(profile, 'Liked Song Signals'))
+      .flatMap((line) => (line.match(/weak style signals: (.+)$/)?.[1] || '').split(',').map((part) => part.trim()))
+      .filter(Boolean);
     const topArtists = stats.topArtists.map((a) => a.artist);
     return {
       preferredArtists: uniq([...topArtists, ...taste.filter((line) => line.length <= 20)], 12),
-      tags: uniq(taste, 12),
+      tags: uniq([...taste, ...weakSignals], 12),
       avoid: bulletLines(extractSection(profile, 'Dislikes And Boundaries')).slice(0, 12),
       mood: firstMeaningfulLine(extractSection(profile, 'Mood'), ''),
       routines: bulletLines(extractSection(profile, 'Routines')).slice(0, 8),
@@ -367,6 +437,7 @@ export function createMemoryService(options?: {
     getSummary,
     updateStyleTags,
     addTastePreference,
+    recordLikedSongSignal,
     updateMood,
     getSearchHints,
   };

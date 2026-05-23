@@ -4,14 +4,18 @@ import { getDbSync, saveDb } from '../db/db.js';
 import { memoryService } from '../services/memory.service.js';
 
 const BASE = 'http://localhost:3000';
-const COOKIE = config.NCM_COOKIE || '';
+
+function getCookie(): string {
+  return config.NCM_COOKIE || '';
+}
 
 async function fetchNcm(path: string, params?: Record<string, string>): Promise<any> {
   const url = new URL(`${BASE}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   }
-  if (COOKIE) url.searchParams.set('cookie', COOKIE);
+  const cookie = getCookie();
+  if (cookie) url.searchParams.set('cookie', cookie);
   const resp = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
   if (!resp.ok) throw new Error(`NCM ${resp.status}`);
   return resp.json();
@@ -38,10 +42,10 @@ function syncLocalLike(songId: string, songName: string, artist: string, like: b
   } catch { /* non-critical */ }
 }
 
-async function updateMemoryFromLike(artist: string, like: boolean) {
-  if (!artist || !like) return;
+async function updateMemoryFromLike(songId: string, songName: string, artist: string, like: boolean) {
+  if (!songId || !songName || !like) return;
   try {
-    await memoryService.addTastePreference(artist);
+    await memoryService.recordLikedSongSignal({ id: songId, name: songName, artist });
   } catch { /* non-critical */ }
 }
 
@@ -68,7 +72,8 @@ export function registerLyricRoutes(app: FastifyInstance) {
     // Fallback to NCM API
     try {
       const url = new URL(`${BASE}/song/like/check`);
-      if (COOKIE) url.searchParams.set('cookie', COOKIE);
+      const cookie = getCookie();
+      if (cookie) url.searchParams.set('cookie', cookie);
       const resp = await fetch(url.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -91,13 +96,14 @@ export function registerLyricRoutes(app: FastifyInstance) {
     // 1. Save locally (always works, no network needed)
     syncLocalLike(songId, body.songName || '', body.artist || '', body.like);
 
-    // 2. Update canonical memory with the liked artist
-    await updateMemoryFromLike(body.artist || '', body.like);
+    // 2. Update canonical memory with a weak song/style signal, not a fixed artist preference.
+    await updateMemoryFromLike(songId, body.songName || '', body.artist || '', body.like);
 
     // 3. Sync to NCM (best effort)
     try {
       const url = new URL(`${BASE}/like`);
-      if (COOKIE) url.searchParams.set('cookie', COOKIE);
+      const cookie = getCookie();
+      if (cookie) url.searchParams.set('cookie', cookie);
       await fetch(url.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

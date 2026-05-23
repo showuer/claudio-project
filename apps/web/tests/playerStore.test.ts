@@ -49,6 +49,13 @@ test('opening narration owns the single TTS audio and skips first song intro whe
   (globalThis as any).fetch = async () => ({
     json: async () => ({ url: '/song.mp3' }),
   });
+  (globalThis as any).AudioContext = class {
+    createMediaElementSource() { return { connect: () => {} }; }
+    createGain() { return { gain: { value: 1 }, connect: () => {} }; }
+    get destination() { return {}; }
+    resume() {}
+    get state() { return 'running'; }
+  };
 
   const mod = await import('../src/stores/playerStore.ts');
   const ps = mod.usePlayerStore.getState();

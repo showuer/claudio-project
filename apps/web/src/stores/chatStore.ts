@@ -97,9 +97,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Natural language response with playlist
       const ttsUrl = result.ttsUrl || '';
       set((s) => ({
-        messages: s.messages.map((m) =>
-          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content } : m
-        ),
+        messages: s.messages.map((m) => {
+          if (m.id === djMsg.id) {
+            return { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content, timestamp: result.djTimestamp || m.timestamp };
+          }
+          if (m.id === userMsg.id && result.userTimestamp) {
+            return { ...m, timestamp: result.userTimestamp };
+          }
+          return m;
+        }),
         isStreaming: false,
       }));
 
@@ -150,9 +156,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const ttsUrl = result.ttsUrl || '';
       set((s) => ({
-        messages: s.messages.map((m) =>
-          m.id === djMsg.id ? { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content } : m
-        ),
+        messages: s.messages.map((m) => {
+          if (m.id === djMsg.id) {
+            return { ...m, status: 'done', ttsUrl, alignment: result.alignment, content: result.say || m.content, timestamp: result.djTimestamp || m.timestamp };
+          }
+          if (m.id === userMsg.id && result.userTimestamp) {
+            return { ...m, timestamp: result.userTimestamp };
+          }
+          return m;
+        }),
         isStreaming: false,
       }));
 
@@ -182,7 +194,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const data = await apiClient.getHistory();
       if (data.messages) {
-        set({ messages: data.messages.map((m: any) => ({ ...m, status: 'done' as const, played: !!m.played })) });
+        set({ messages: data.messages.map((m: any) => ({
+          ...m,
+          status: 'done' as const,
+          played: !!m.played,
+          // All stored timestamps are UTC. Normalise SQLite format to ISO+Z.
+          timestamp: !m.timestamp ? new Date().toISOString()
+            : !m.timestamp.includes('T') ? m.timestamp.replace(' ', 'T') + 'Z'
+            : m.timestamp.endsWith('Z') ? m.timestamp
+            : m.timestamp + 'Z',
+        })) });
       }
     } catch { /* ignore */ }
   },

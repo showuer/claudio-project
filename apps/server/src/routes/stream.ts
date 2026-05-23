@@ -2,6 +2,12 @@ import { FastifyInstance } from 'fastify';
 import { OutgoingHttpHeaders } from 'node:http';
 import { ncmService } from '../services/ncm.service.js';
 
+let activeStreams = 0;
+
+export function getActiveStreamCount(): number {
+  return activeStreams;
+}
+
 export function registerStreamRoutes(app: FastifyInstance) {
   app.get('/api/stream/:songId', async (req, reply) => {
     const { songId } = req.params as { songId: string };
@@ -16,10 +22,7 @@ export function registerStreamRoutes(app: FastifyInstance) {
       const range = req.headers.range;
       if (range) headers.Range = range;
 
-      const resp = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(15000),
-      });
+      const resp = await fetch(url, { headers });
 
       if (!resp.ok || !resp.body) {
         return reply.status(502).send({ error: 'Stream fetch failed' });
@@ -42,6 +45,8 @@ export function registerStreamRoutes(app: FastifyInstance) {
       const reader = resp.body.getReader();
       reply.hijack();
       reply.raw.writeHead(status, reply.getHeaders() as OutgoingHttpHeaders);
+      activeStreams++;
+      reply.raw.on('close', () => { activeStreams = Math.max(0, activeStreams - 1); });
 
       const pump = async () => {
         try {
@@ -52,7 +57,7 @@ export function registerStreamRoutes(app: FastifyInstance) {
           }
         } catch { reply.raw.destroy(); }
       };
-      pump();
+      pump().catch(() => { /* connection torn down */ });
     } catch {
       return reply.status(502).send({ error: 'Stream failed' });
     }

@@ -14,10 +14,15 @@ function rowToMessage(r: any[]): Message {
 }
 
 export const messagesRepo = {
-  async insert(msg: Omit<Message, 'created_at'>) {
+  async insert(msg: Omit<Message, 'created_at'> & { created_at?: string }) {
     const db = await getDb();
-    db.run('INSERT INTO messages (id, role, content, tts_url, played) VALUES (?, ?, ?, ?, ?)',
-      [msg.id, msg.role, msg.content, msg.tts_url, msg.played]);
+    if (msg.created_at) {
+      db.run('INSERT INTO messages (id, role, content, tts_url, played, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [msg.id, msg.role, msg.content, msg.tts_url, msg.played, msg.created_at]);
+    } else {
+      db.run('INSERT INTO messages (id, role, content, tts_url, played) VALUES (?, ?, ?, ?, ?)',
+        [msg.id, msg.role, msg.content, msg.tts_url, msg.played]);
+    }
     saveDb();
   },
 
@@ -38,5 +43,12 @@ export const messagesRepo = {
     const db = await getDb();
     db.run('UPDATE messages SET tts_url = ? WHERE id = ?', [ttsUrl, id]);
     saveDb();
+  },
+
+  async getById(id: string): Promise<Message | undefined> {
+    const db = await getDb();
+    const res = db.exec('SELECT * FROM messages WHERE id = ?', [id]);
+    if (!res.length || !res[0].values.length) return undefined;
+    return rowToMessage(res[0].values[0]);
   },
 };

@@ -9,6 +9,46 @@ import { memoryService } from '../services/memory.service.js';
 
 const AIDJ_TRACK_COUNT = 10;
 
+/**
+ * SQLite datetime('now') returns UTC without timezone indicator:
+ *   "2026-05-22 02:19:56"  (UTC, but no Z → new Date() treats as LOCAL!)
+ * JS new Date().toISOString() returns:
+ *   "2026-05-22T02:19:56.000Z" (UTC with Z → correct)
+ *
+ * ALL stored timestamps are UTC. The only correct ISO representation
+ * for UTC is WITH the Z suffix. Without Z, new Date() interprets as
+ * local time (ES2015 §20.3.1.15), creating a UTC-offset error.
+ */
+function normalizeTimestamp(raw: string): string {
+  if (!raw) return new Date().toISOString();
+  // Normalise SQLite space-separated format to T-separated
+  let iso = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  // Pad seconds if missing (unlikely but defensive)
+  if (iso.split(':').length === 2) iso += ':00';
+  // ALL timestamps are UTC — ensure Z suffix so new Date() parses correctly
+  if (!iso.endsWith('Z')) iso += 'Z';
+  return iso;
+}
+
+/** One-time repair: normalise all existing created_at values to ISO-UTC+Z. */
+async function repairMessageTimestamps() {
+  const all = await messagesRepo.getRecent(99999);
+  const db = await import('../db/db.js').then((d) => d.getDb());
+  let changed = 0;
+  for (const m of all) {
+    if (!m.created_at) continue;
+    const fixed = normalizeTimestamp(m.created_at);
+    if (fixed !== m.created_at) {
+      db.run('UPDATE messages SET created_at = ? WHERE id = ?', [fixed, m.id]);
+      changed++;
+    }
+  }
+  if (changed > 0) {
+    import('../db/db.js').then((d) => d.saveDb());
+    console.log(`[repair] Fixed ${changed} message timestamps`);
+  }
+}
+
 function ensureOneMinuteOpening(
   say: string,
   songs: Array<{ name: string; artist?: string; intro?: string }>,
@@ -30,6 +70,43 @@ function ensureOneMinuteOpening(
   ].join('');
 
   return `${cleaned}${cleaned.endsWith('。') ? '' : '。'}${extension}`;
+}
+
+function normalizePlaylistOpening(
+  say: string,
+  songs: Array<{ name: string; artist?: string; intro?: string }>,
+): string {
+  const cleaned = (say || '').trim();
+  if (!cleaned) {
+    const featured = songs[0]?.name ? `先从《${songs[0].name}》开始。` : '';
+    return `${featured}这组歌我会少说一点，把空间留给音乐本身。`;
+  }
+  if (cleaned.length <= 280) return cleaned;
+  const clipped = cleaned.slice(0, 260);
+  const end = Math.max(clipped.lastIndexOf('。'), clipped.lastIndexOf('！'), clipped.lastIndexOf('？'));
+  return end > 120 ? clipped.slice(0, end + 1) : `${clipped}。`;
+}
+
+function buildPlaylistOpeningPrompt(userInput: string, songInfoStr: string, currentTime: string, mode: 'music' | 'aidj') {
+  return `User request: ${userInput}
+Current local time: ${currentTime}
+Mode: ${mode}
+
+Songs that will play next:
+${songInfoStr}
+
+Write one continuous Mandarin FM opening for this playlist.
+Hard rules:
+- The "say" field must be 150-240 Chinese characters.
+- Mention at most two song names total. Usually choose one strongest recommendation and focus on it.
+- Do not list the playlist. Do not introduce songs one by one. Do not write per-song intros.
+- Match the current time exactly. If it is noon or afternoon, do not say "night", "late night", or "夜里的小广播".
+- Avoid reusable template phrases, especially: "把呼吸放慢一点", "交给歌，也交给你自己", "屏幕边缘", "夜里的小广播", "不需要立刻得到答案".
+- Use recent conversation and memory only when it is actually relevant. Single likes are weak signals, not proof of fixed taste.
+- Sound like a real warm male FM host, concrete and present, not motivational, not philosophical padding.
+
+Return strict JSON only:
+{"theme":"主题","say":"150-240字中文电台开场，只重点讲1首歌，最多自然提到2首歌名","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}`;
 }
 
 async function collectAidjSongs(targetCount = AIDJ_TRACK_COUNT) {
@@ -62,16 +139,25 @@ async function collectAidjSongs(targetCount = AIDJ_TRACK_COUNT) {
   return songs.slice(0, targetCount);
 }
 
+let repaired = false;
+
 export function registerChatRoutes(app: FastifyInstance) {
+  if (!repaired) { repaired = true; repairMessageTimestamps(); }
+
   app.post('/api/chat', async (req, reply) => {
-    const { message } = req.body as { message: string };
+    const body = req.body as { message?: string } | null;
+    const message = body?.message?.trim();
+    if (!message) {
+      return reply.status(400).send({ error: 'message is required' });
+    }
 
     const userMsgId = crypto.randomUUID();
+    const userTimestamp = new Date().toISOString();
     await messagesRepo.insert({
-      id: userMsgId, role: 'user', content: message, tts_url: null, played: 1,
+      id: userMsgId, role: 'user', content: message, tts_url: null, played: 1, created_at: userTimestamp,
     });
 
-    const msg = message.trim().toLowerCase();
+    const msg = message.toLowerCase();
 
     // Simple intent routing
     if (/^(暂停|停止|pause|stop)$/i.test(msg)) {
@@ -101,19 +187,22 @@ export function registerChatRoutes(app: FastifyInstance) {
         { role: 'system' as const, content: ctx.systemPrompt.replace('{{chatHistory}}', '（本轮是明确搜歌/放歌请求）') },
         { role: 'user' as const, content: `用户明确想听: ${message}\n\n后端已经找到这些可播放歌曲:\n${candidateStr}\n\n只从这些歌里组织一个 10 首以内歌单。写一段完整中文 FM intro，不要逐首介绍。返回严格 JSON: {"theme":"主题","say":"180-280字中文开场，只重点解读其中一首最推荐的歌","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}` },
       ];
+      openingPrompt[1] = { role: 'user' as const, content: buildPlaylistOpeningPrompt(message, candidateStr, ctx.time, 'music') };
       const output = await deepseekService.chatComplete(openingPrompt);
-      const say = ensureOneMinuteOpening(output.say || `找到 ${playableSearch.keyword} 了，我们慢慢听。`, songs);
+      const say = normalizePlaylistOpening(output.say || `找到 ${playableSearch.keyword} 了，我们慢慢听。`, songs);
       const ttsResult = await ttsService.synthesize(say);
       if ((output as any).mood && typeof (output as any).mood === 'string') {
         await memoryService.updateMood((output as any).mood);
       }
       const djMsgId = crypto.randomUUID();
+      const djTimestamp = new Date().toISOString();
       await messagesRepo.insert({
         id: djMsgId,
         role: 'dj',
         content: say,
         tts_url: ttsResult.audioUrl || null,
         played: 0,
+        created_at: djTimestamp,
       });
       return {
         type: 'playlist',
@@ -126,6 +215,8 @@ export function registerChatRoutes(app: FastifyInstance) {
         songIntros: {},
         songIntroAlignments: {},
         source: playableSearch.source,
+        userTimestamp,
+        djTimestamp,
       };
     }
 
@@ -200,6 +291,10 @@ export function registerChatRoutes(app: FastifyInstance) {
       'X-Accel-Buffering': 'no',
     });
 
+    let clientGone = false;
+    const onClose = () => { clientGone = true; };
+    req.raw.on('close', onClose);
+
     try {
       const messages = [
         { role: 'system' as const, content: systemPrompt },
@@ -208,9 +303,12 @@ export function registerChatRoutes(app: FastifyInstance) {
 
       let fullOutput = '';
       for await (const chunk of deepseekService.chat(messages)) {
+        if (clientGone) break;
         fullOutput += chunk;
         reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
       }
+
+      if (clientGone) { req.raw.removeListener('close', onClose); reply.raw.end(); return reply; }
 
       // Parse output: may or may not have songs
       let output: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string }>; play?: Array<{ id: string; name: string; artist: string }> };
@@ -231,8 +329,9 @@ export function registerChatRoutes(app: FastifyInstance) {
       }
 
       const djMsgId = crypto.randomUUID();
+      const djTimestamp = new Date().toISOString();
       await messagesRepo.insert({
-        id: djMsgId, role: 'dj', content: output.say, tts_url: ttsResult.audioUrl || null, played: 0,
+        id: djMsgId, role: 'dj', content: output.say, tts_url: ttsResult.audioUrl || null, played: 0, created_at: djTimestamp,
       });
 
       reply.raw.write(`data: ${JSON.stringify({
@@ -243,11 +342,16 @@ export function registerChatRoutes(app: FastifyInstance) {
         songIntros: {},
         songIntroAlignments: {},
         chatOnly: !hasSongs,
+        userTimestamp,
+        djTimestamp,
       })}\n\n`);
     } catch (err: any) {
-      reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'Unknown error' })}\n\n`);
+      if (!clientGone) {
+        reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'Unknown error' })}\n\n`);
+      }
     }
 
+    req.raw.removeListener('close', onClose);
     reply.raw.end();
     return reply;
   });
@@ -257,16 +361,20 @@ export function registerChatRoutes(app: FastifyInstance) {
     const { message } = req.body as { message: string };
     const userInput = (message || '来点音乐').trim();
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
+    let clientGoneAidj = false;
+    const onCloseAidj = () => { clientGoneAidj = true; };
+    req.raw.on('close', onCloseAidj);
+
+    const aidjUserMsgId = crypto.randomUUID();
+    const aidjUserTimestamp = new Date().toISOString();
+    await messagesRepo.insert({
+      id: aidjUserMsgId, role: 'user', content: userInput, tts_url: null, played: 1, created_at: aidjUserTimestamp,
     });
 
     try {
       // 1. Get a stable 10-song AIDJ queue. Personal FM often returns 3 songs per call.
       const songList = await collectAidjSongs(AIDJ_TRACK_COUNT);
+      if (clientGoneAidj) { req.raw.removeListener('close', onCloseAidj); reply.raw.end(); return reply; }
 
       // 2. DeepSeek opening monologue
       const ctx = await contextService.assembleContext(userInput, 'aidj');
@@ -280,42 +388,20 @@ export function registerChatRoutes(app: FastifyInstance) {
       const songInfoStr = songList.length > 0
         ? songList.map((s, i) => `${i + 1}. [${s.id}] ${s.name} - ${s.artist || '未知'}`).join('\n')
         : '暂无歌曲';
+
       const openingPrompt = [
         { role: 'system' as const, content: systemPrompt },
-        { role: 'user' as const, content: `用户说: ${userInput}\n\n接下来要播放的歌曲:\n${songInfoStr}\n\n请为这批歌曲写开场白和每首歌的简短介绍。返回JSON:\n{"theme":"主题","say":"60-120字开场白,必须提到下面这些歌","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手","intro":"15-25字,结合用户心情介绍这首歌"}]}` },
+        { role: 'user' as const, content: buildPlaylistOpeningPrompt(userInput, songInfoStr, ctx.time, 'aidj') },
       ];
 
       let fullOutput = '';
-      openingPrompt[1] = { role: 'user' as const, content: `User request: ${userInput}
-
-Songs that will play next:
-${songInfoStr}
-
-Write one continuous private Mandarin FM radio opening for the whole playlist. Do not write per-song intros. The opening must respond to the recent conversation context, then connect these songs to ordinary life, time, breath, loneliness, love, choice, or small freedom. Do not sound like a playlist announcement, encyclopedia, motivational quote, or template. Vary sentence rhythm each time, but make the paragraph feel like one continuous thought rather than separate stitched sentences. The voice should be a warm Chinese male radio host.
-
-The opening "say" must be long enough for at least 60 seconds of spoken audio: write 360-480 Chinese characters, with natural pauses and enough atmosphere before the first song fades in.
-
-The "songs" array is only metadata for the playlist. Do not include or write intro text for individual songs.
-
-Return strict JSON only:
-{"theme":"主题","say":"360-480字中文电台开场白。必须自然提到几首歌，但重点是把这批歌和一种生活/哲学感受连起来。要像真正 FM 开场，说完可以直接放歌。","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手","intro":"35-60字中文。结合这首歌、用户此刻和一点生活感/哲学感，不要像百科介绍。"}]}` };
-
-      openingPrompt[1] = { role: 'user' as const, content: `User request: ${userInput}
-
-Songs that will play next:
-${songInfoStr}
-
-Write one continuous Mandarin FM opening for the whole playlist. Do not introduce every song. Choose exactly one strongest recommendation from the list and spend most of the monologue interpreting it: why this song fits this moment, what emotion or life texture it carries, and how it opens a doorway into the rest of the playlist. You may briefly mention at most two other songs only if they help the emotional thread. Sound like a warm male radio host and an emotional companion, not a catalogue, not a music encyclopedia, not a motivational quote.
-
-The opening "say" should be 360-480 Chinese characters. It must feel like one connected paragraph: each sentence should inherit the breath and meaning of the previous sentence. Avoid stitched, standalone sentence rhythm. Use natural pauses, but keep the emotional line continuous.
-
-Return strict JSON only:
-{"theme":"主题","say":"360-480字中文电台开场白，只深入解读一首最推荐的歌，同时把它和生活、关系、夜晚、呼吸、选择或自由中的一种感受连起来。不要逐首点名歌单。","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}` };
-
       for await (const chunk of deepseekService.chat(openingPrompt)) {
+        if (clientGoneAidj) break;
         fullOutput += chunk;
         reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
       }
+
+      if (clientGoneAidj) { req.raw.removeListener('close', onCloseAidj); reply.raw.end(); return reply; }
 
       // Parse opening
       let opening: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string; intro: string }> } = { say: '来听歌吧。' };
@@ -329,12 +415,13 @@ Return strict JSON only:
       const songs = songList.map((s) => ({
         id: s.id, name: s.name, artist: s.artist,
       }));
-      opening.say = ensureOneMinuteOpening(opening.say, songs);
+      opening.say = normalizePlaylistOpening(opening.say, songs);
       const ttsResult = await ttsService.synthesize(opening.say);
 
       const djMsgId = crypto.randomUUID();
+      const djTimestamp = new Date().toISOString();
       await messagesRepo.insert({
-        id: djMsgId, role: 'dj', content: opening.say, tts_url: ttsResult.audioUrl || null, played: 0,
+        id: djMsgId, role: 'dj', content: opening.say, tts_url: ttsResult.audioUrl || null, played: 0, created_at: djTimestamp,
       });
 
       reply.raw.write(`data: ${JSON.stringify({
@@ -348,11 +435,16 @@ Return strict JSON only:
         songIntros: {},
         songIntroAlignments: {},
         source: 'aidj',
+        userTimestamp: aidjUserTimestamp,
+        djTimestamp,
       })}\n\n`);
     } catch (err: any) {
-      reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'AIDJ failed' })}\n\n`);
+      if (!clientGoneAidj) {
+        reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'AIDJ failed' })}\n\n`);
+      }
     }
 
+    req.raw.removeListener('close', onCloseAidj);
     reply.raw.end();
     return reply;
   });
@@ -361,6 +453,9 @@ Return strict JSON only:
     const query = req.query as { limit?: string };
     const limit = parseInt(query.limit || '50');
     const msgs = await messagesRepo.getRecent(limit);
-    return { messages: msgs.reverse().map((m) => ({ ...m, timestamp: m.created_at })) };
+    return { messages: msgs.reverse().map((m) => ({
+      ...m,
+      timestamp: normalizeTimestamp(m.created_at),
+    })) };
   });
 }

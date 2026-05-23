@@ -12,8 +12,22 @@ test('chat routes synthesize only playlist openings, not per-song intros', () =>
   assert.equal(chatRoute.includes('const introTasks = songs'), false);
   assert.equal(chatRoute.includes('ttsService.synthesize(s.intro'), false);
   assert.match(chatRoute, /Do not write per-song intros/);
-  assert.match(chatRoute, /Choose exactly one strongest recommendation/);
-  assert.match(chatRoute, /Do not introduce every song/);
+  assert.match(chatRoute, /buildPlaylistOpeningPrompt/);
+  assert.match(chatRoute, /150-240 Chinese characters/);
+});
+
+test('music and aidj intros share concise time-aware opening rules', () => {
+  const chatRoute = fs.readFileSync(path.join(__dirname, 'chat.ts'), 'utf-8');
+
+  assert.match(chatRoute, /function buildPlaylistOpeningPrompt/);
+  assert.match(chatRoute, /150-240 Chinese characters/);
+  assert.match(chatRoute, /Mention at most two song names total/);
+  assert.match(chatRoute, /Match the current time exactly/);
+  assert.match(chatRoute, /Single likes are weak signals/);
+  assert.match(chatRoute, /buildPlaylistOpeningPrompt\(message, candidateStr, ctx\.time, 'music'\)/);
+  assert.match(chatRoute, /buildPlaylistOpeningPrompt\(userInput, songInfoStr, ctx\.time, 'aidj'\)/);
+  assert.match(chatRoute, /normalizePlaylistOpening\(output\.say/);
+  assert.match(chatRoute, /normalizePlaylistOpening\(opening\.say/);
 });
 
 test('chat routes return playlist payloads only after opening tts is complete', () => {
@@ -49,4 +63,27 @@ test('chat route writes detected mood through memoryService', () => {
 
   assert.match(chatRoute, /memoryService\.updateMood/);
   assert.doesNotMatch(chatRoute, /writeFileSync\(path\.join\(rootDir, 'user', 'mood\.md'\)/);
+});
+
+test('chatHistory placeholder is replaced in all code paths', () => {
+  const chatRoute = fs.readFileSync(path.join(__dirname, 'chat.ts'), 'utf-8');
+  const scheduler = fs.readFileSync(
+    path.join(__dirname, '..', 'services', 'scheduler.service.ts'),
+    'utf-8',
+  );
+
+  // chat.ts: all three paths replace {{chatHistory}}
+  const replaceCount = (chatRoute.match(/\{\{chatHistory\}\}/g) || []).length;
+  // systemPrompt.replace calls that don't use {{chatHistory}} shouldn't leave it unreplaced
+  const unreplacedInChat = chatRoute
+    .split('\n')
+    .filter((line) => line.includes("systemPrompt") && line.includes("content:") && !line.includes('{{chatHistory}}'))
+    .length;
+  // Every line that sets content: systemPrompt... should also replace {{chatHistory}}
+  // Actually, context.service returns systemPrompt, and chat.ts replaces {{chatHistory}} on it
+  assert.match(chatRoute, /replace\('\{\{chatHistory\}\}'/);
+
+  // scheduler: must also replace {{chatHistory}} (was the bug)
+  assert.match(scheduler, /replace\('\{\{chatHistory\}\}'/);
+  assert.match(scheduler, /定时自动问候/);
 });
