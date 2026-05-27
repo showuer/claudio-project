@@ -11,9 +11,10 @@ Build an independent infinite music-flow module for Claudio with three station s
 - Station modes are homepage themes, not small widgets inside the existing default home UI.
 - User-initiated mode switches fade out the current song immediately, then enter the new station surface.
 - `Cafe` and `Library` live under one `Focus Space` module with a sub-mode switch.
-- `Cafe` is a dim original-wood cafe atmosphere: lofi, jazzhop, clean groove, and low vocal tracks are allowed.
+- `Cafe` is a dim cafe atmosphere based on original-wood color temperature: lofi, jazzhop, clean groove, and low vocal tracks are allowed.
 - `Library` is warm yellow reading-light atmosphere: quiet, soft, paper/desk feeling, and strictly instrumental.
 - `Random Infinite` is a signal-flow exploration theme with more motion and discovery energy.
+- Station surfaces use the current song cover as an ambient color source: extract several dominant cover colors, render them as a blurred background field, and apply a strong Gaussian blur so the cover becomes atmosphere rather than a visible image.
 - Every mode prioritizes the user's taste memory before generic recommendations.
 - The infinite stream should hide network/provider failures through buffering, prefetch, fallback songs, and retry logic.
 
@@ -25,7 +26,7 @@ The homepage gets a station surface layer above the current player. The default 
 
 `Focus Space` behaves like a quiet environment selector. Its primary surface contains two sub-modes:
 
-- `Cafe`: dim, warm, original wood, comfortable shadows, soft reflections, and gently moving audio visuals.
+- `Cafe`: dim, warm, original-wood color temperature, comfortable shadows, soft reflections, and gently moving audio visuals.
 - `Library`: warm yellow desk lamp, page texture, quiet spacing, low motion, strict instrumental curation.
 
 ## Architecture
@@ -120,6 +121,18 @@ Playback behavior:
 
 ## Theme UI Design
 
+### Shared Station Background
+
+All infinite station themes should use the current song cover as the base ambient layer. The UI should sample or approximate the cover's dominant colors, place those colors as soft full-surface gradients or blobs behind the controls, and apply a strong Gaussian blur. The result should feel like the song cover is lighting the room, not like a cropped album-art wallpaper.
+
+Rules:
+
+- The cover itself should not be readable as a sharp image.
+- The blurred color field updates when the current song changes.
+- Text and controls must remain readable regardless of cover color.
+- Each theme still applies its own palette discipline on top of the cover colors.
+- If cover extraction fails, fall back to the theme palette.
+
 ### Random Infinite
 
 Visual language: signal scan, moving waveform bands, dot-matrix telemetry, active discovery.
@@ -133,11 +146,11 @@ UI elements:
 
 ### Focus Space: Cafe
 
-Visual language: dim original-wood cafe, warm low light, comfortable shadows.
+Visual language: dim cafe warmth inspired by original wood tones, warm low light, comfortable shadows. It should use the color feeling of original wood rather than literal wood panel texture.
 
 UI elements:
 
-- Wooden-panel inspired background treatment using CSS textures, not stock cafe imagery.
+- Dark warm brown, amber, and softened caramel color relationships inspired by original wood, without literal wood-grain panels.
 - Warm amber controls with subtle highlights.
 - Softer waveform with slow sway.
 - Sub-mode switch clearly shows `Cafe` and `Library`.
@@ -219,7 +232,7 @@ UI tests:
 - Random, Cafe, and Library each apply distinct station surface classes.
 - Cafe and Library appear under one Focus Space module.
 - Library surface uses warm reading-light styling.
-- Cafe surface uses dim original-wood styling.
+- Cafe surface uses dim original-wood color warmth without literal wood texture.
 - Station modes do not render TTS overlay content or chat messages.
 
 Network tests:
