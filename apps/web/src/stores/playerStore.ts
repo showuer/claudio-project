@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 
 export interface Song {
-  song_id: string; song_name: string; artist: string; intro?: string; introUrl?: string;
+  song_id: string; song_name: string; artist: string; intro?: string; introUrl?: string; coverUrl?: string; url?: string;
 }
+
+export type StationMode = 'aidj' | 'random-infinite' | 'focus-cafe' | 'focus-library' | '';
+type StationHealth = 'idle' | 'ok' | 'refilling' | 'thin' | 'fallback' | 'error';
 
 let audio: HTMLAudioElement | null = null;
 let introAudio: HTMLAudioElement | null = null;
@@ -15,6 +18,8 @@ let narrationTimer: ReturnType<typeof setInterval> | null = null;
 let narrationAudio: HTMLAudioElement | null = null;
 let pendingPlaylistIntroUrl = '';
 let pendingPlaylistStartIndex = -1;
+let skipAfterFailureTimer: ReturnType<typeof setTimeout> | null = null;
+let lyricRequestSession = 0;
 
 // ── Narration volume boost via Web Audio GainNode ──────────────
 // HTMLAudioElement.volume is capped at 1.0, but TTS MP3 files are
@@ -45,9 +50,25 @@ function withoutSongIntro(song: Song): Song {
   return { ...song, intro: '', introUrl: '' };
 }
 
+function uniqueSongs(songs: Song[]): Song[] {
+  const seen = new Set<string>();
+  return songs.filter((song) => {
+    if (!song?.song_id || seen.has(song.song_id)) return false;
+    seen.add(song.song_id);
+    return true;
+  });
+}
+
+function cancelMusicFade() {
+  if (fadeInterval) {
+    clearInterval(fadeInterval);
+    fadeInterval = null;
+  }
+}
+
 function fadeMusicTo(target: number, durationMs: number, onDone?: () => void) {
   if (!audio) return;
-  if (fadeInterval) { clearInterval(fadeInterval); fadeInterval = null; }
+  cancelMusicFade();
   const startVol = audio.volume;
   const steps = Math.round(durationMs / 250);
   if (steps <= 0) {
@@ -84,12 +105,16 @@ function ensureAudio() {
           const retryUrl = getMusicStreamUrl(song.song_id) + '?retry=' + errorCount;
           const pos = audio.currentTime || 0;
           audio.src = retryUrl;
-          audio.currentTime = pos;
-          audio.play().catch(() => {});
+          try { audio.currentTime = pos; } catch { /* ignore unavailable seek */ }
+          audio.play().catch(() => {
+            usePlayerStore.setState({ musicPlaying: false });
+          });
         }
       } else {
+        const session = playbackSession;
         usePlayerStore.setState({ musicPlaying: false });
         errorCount = 0;
+        scheduleNextAfterPlaybackFailure(session);
       }
     });
     audio.addEventListener('ended', () => {
@@ -102,6 +127,26 @@ function ensureAudio() {
     introAudio.volume = 1;
   }
   return { audio, introAudio };
+}
+
+function scheduleNextAfterPlaybackFailure(session: number) {
+  const failedState = usePlayerStore.getState();
+  const failed = failedState.playlist[failedState.currentIndex];
+  if (failedState.activeStationMode && failed?.song_id) {
+    usePlayerStore.setState((state) => ({
+      stationRecentFailures: [...state.stationRecentFailures, failed.song_id].slice(-50),
+    }));
+  }
+  if (skipAfterFailureTimer) {
+    clearTimeout(skipAfterFailureTimer);
+    skipAfterFailureTimer = null;
+  }
+  skipAfterFailureTimer = setTimeout(() => {
+    if (session !== playbackSession) return;
+    const state = usePlayerStore.getState();
+    if (state.playlist.length <= 1) return;
+    state.nextTrack();
+  }, 250);
 }
 
 export function getMusicAudioElement(): HTMLAudioElement | null {
@@ -194,9 +239,19 @@ interface PlayerState {
   narrationTimeMs: number;
   narrationDurationMs: number;
   narrationPlaying: boolean;
+  activeStationMode: StationMode;
+  stationCursor: string;
+  stationHealth: StationHealth;
+  stationBuffering: boolean;
+  stationRecentFailures: string[];
+  likedTrackIds: string[];
 
   setPlaylist: (s: Song[]) => void;
   queuePlaylist: (s: Song[], narrationUrl?: string) => void;
+  startStation: (mode: Exclude<StationMode, ''>, songs: Song[], cursor: string, health?: StationHealth) => void;
+  playStationQueue: (mode: Exclude<StationMode, ''>, songs: Song[], index: number, cursor?: string, health?: StationHealth) => void;
+  appendStationSongs: (songs: Song[], cursor: string, health?: StationHealth) => void;
+  stopStation: () => void;
   playTrack: (i: number, options?: { skipIntro?: boolean; keepNarration?: boolean }) => void;
   toggleMusic: () => void;
   nextTrack: () => void;
@@ -210,10 +265,25 @@ interface PlayerState {
   fetchLyric: (songId: string) => Promise<void>;
   fetchLikeStatus: (songId: string) => Promise<void>;
   toggleLike: (songId: string) => Promise<void>;
+  toggleTrackLike: (songId: string) => Promise<void>;
   init: () => void;
 }
 
 const STORAGE = 'claudio_playlist';
+const LIKED_STORAGE = 'claudio_liked_track_ids';
+
+function readLikedTrackIds() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LIKED_STORAGE) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLikedTrackIds(ids: string[]) {
+  localStorage.setItem(LIKED_STORAGE, JSON.stringify([...new Set(ids)]));
+}
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   playlist: (() => { try { const d = JSON.parse(localStorage.getItem(STORAGE) || '{}'); return d.playlist || []; } catch { return []; } })(),
@@ -230,6 +300,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   narrationTimeMs: 0,
   narrationDurationMs: 0,
   narrationPlaying: false,
+  activeStationMode: '',
+  stationCursor: '',
+  stationHealth: 'idle',
+  stationBuffering: false,
+  stationRecentFailures: [],
+  likedTrackIds: readLikedTrackIds(),
 
   init: () => {
     ensureAudio();
@@ -237,24 +313,41 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   setPlaylist: (songs) => {
-    const nextSongs = songs.map(withoutSongIntro);
+    const nextSongs = uniqueSongs(songs.map(withoutSongIntro));
     pendingPlaylistIntroUrl = '';
     pendingPlaylistStartIndex = -1;
-    set({ playlist: nextSongs, currentIndex: 0, musicPlaying: false, progressMs: 0 });
+    set({
+      playlist: nextSongs,
+      currentIndex: 0,
+      musicPlaying: false,
+      progressMs: 0,
+      activeStationMode: '',
+      stationCursor: '',
+      stationHealth: 'idle',
+      stationBuffering: false,
+    });
     localStorage.setItem(STORAGE, JSON.stringify({ playlist: nextSongs, currentIndex: 0 }));
   },
 
   queuePlaylist: (songs, narrationUrl = '') => {
     const { playlist, currentIndex } = get();
     const currentSong = playlist[currentIndex];
-    const nextSongs = songs.map(withoutSongIntro);
+    const nextSongs = uniqueSongs(songs.map(withoutSongIntro));
     const isCurrentSongPlaying = !!currentSong && !!audio && !audio.paused;
 
     if (isCurrentSongPlaying) {
-      const merged = [withoutSongIntro(currentSong), ...nextSongs.filter((song) => song.song_id !== currentSong.song_id)];
+      const existingIds = new Set(playlist.map((song) => song.song_id));
+      const merged = [withoutSongIntro(currentSong), ...nextSongs.filter((song) => !existingIds.has(song.song_id))];
       pendingPlaylistIntroUrl = narrationUrl;
       pendingPlaylistStartIndex = merged.length > 1 ? 1 : -1;
-      set({ playlist: merged, currentIndex: 0 });
+      set({
+        playlist: merged,
+        currentIndex: 0,
+        activeStationMode: '',
+        stationCursor: '',
+        stationHealth: 'idle',
+        stationBuffering: false,
+      });
       localStorage.setItem(STORAGE, JSON.stringify({ playlist: merged, currentIndex: 0 }));
       return;
     }
@@ -268,12 +361,83 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
+  startStation: (mode, songs, cursor, health = 'ok') => {
+    const nextSongs = uniqueSongs(songs.map(withoutSongIntro));
+    pendingPlaylistIntroUrl = '';
+    pendingPlaylistStartIndex = -1;
+    if (audio && !audio.paused) fadeMusicTo(0, 800);
+    set({
+      activeStationMode: mode,
+      stationCursor: cursor,
+      stationHealth: health,
+      stationBuffering: false,
+      stationRecentFailures: [],
+      playlist: nextSongs,
+      currentIndex: 0,
+      musicPlaying: false,
+      progressMs: 0,
+    });
+    localStorage.setItem(STORAGE, JSON.stringify({
+      playlist: nextSongs,
+      currentIndex: 0,
+      activeStationMode: mode,
+      stationCursor: cursor,
+    }));
+    if (nextSongs.length) setTimeout(() => get().playTrack(0), audio && !audio.paused ? 850 : 0);
+  },
+
+  playStationQueue: (mode, songs, index, cursor = get().stationCursor, health = 'ok') => {
+    const nextSongs = uniqueSongs(songs.map(withoutSongIntro));
+    if (!nextSongs.length || index < 0 || index >= nextSongs.length) return;
+    pendingPlaylistIntroUrl = '';
+    pendingPlaylistStartIndex = -1;
+    set({
+      activeStationMode: mode,
+      stationCursor: cursor,
+      stationHealth: health,
+      stationBuffering: false,
+      playlist: nextSongs,
+      currentIndex: index,
+      musicPlaying: false,
+      progressMs: 0,
+    });
+    localStorage.setItem(STORAGE, JSON.stringify({
+      playlist: nextSongs,
+      currentIndex: index,
+      activeStationMode: mode,
+      stationCursor: cursor,
+    }));
+    get().playTrack(index);
+  },
+
+  appendStationSongs: (songs, cursor, health = 'ok') => {
+    const existing = new Set(get().playlist.map((song) => song.song_id));
+    const additions = uniqueSongs(songs.map(withoutSongIntro)).filter((song) => !existing.has(song.song_id));
+    set((state) => ({
+      playlist: [...state.playlist, ...additions],
+      stationCursor: cursor,
+      stationHealth: health,
+      stationBuffering: false,
+    }));
+  },
+
+  stopStation: () => {
+    set({
+      activeStationMode: '',
+      stationCursor: '',
+      stationHealth: 'idle',
+      stationBuffering: false,
+      stationRecentFailures: [],
+    });
+  },
+
   playTrack: (i, options = {}) => {
     const { playlist, volume } = get();
     if (i < 0 || i >= playlist.length) return;
     const session = ++playbackSession;
     const song = playlist[i];
     const { audio: a, introAudio: ia } = ensureAudio();
+    cancelMusicFade();
     a.volume = volume;
     a.pause();
     if (!options.keepNarration) stopNarrationAudio();
@@ -283,6 +447,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     ia.onerror = null;
 
     errorCount = 0;
+    if (skipAfterFailureTimer) {
+      clearTimeout(skipAfterFailureTimer);
+      skipAfterFailureTimer = null;
+    }
     set({ currentIndex: i, musicPlaying: false, progressMs: 0 });
     localStorage.setItem(STORAGE, JSON.stringify({ playlist, currentIndex: i }));
 
@@ -298,9 +466,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       if (session !== playbackSession) return;
       const url = getMusicStreamUrl(song.song_id);
       a.src = url;
-      a.play().catch(() => {});
-      set({ musicPlaying: true, djNarrating: false });
-      trackPlay();
+      try {
+        await a.play();
+        if (session !== playbackSession) return;
+        set({ musicPlaying: true, djNarrating: false });
+        trackPlay();
+      } catch {
+        if (session !== playbackSession) return;
+        set({ musicPlaying: false });
+        scheduleNextAfterPlaybackFailure(session);
+      }
     };
 
     playSong();
@@ -309,7 +484,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   toggleMusic: () => {
     const a = audio; if (!a) return;
     if (get().musicPlaying) { a.pause(); set({ musicPlaying: false }); }
-    else if (a.src) { a.play().catch(() => {}); set({ musicPlaying: true }); }
+    else if (a.src) {
+      a.play()
+        .then(() => set({ musicPlaying: true }))
+        .catch(() => set({ musicPlaying: false }));
+    }
   },
 
   nextTrack: () => {
@@ -437,11 +616,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   stopNarration: () => stopNarrationAudio(),
 
   fetchLyric: async (songId) => {
+    const requestSession = ++lyricRequestSession;
+    set({ lyricLrc: '', lyricKlyric: '' });
     try {
       const resp = await fetch(`/api/lyric/${songId}`);
       const json = await resp.json();
+      const state = get();
+      const currentSong = state.playlist[state.currentIndex];
+      if (requestSession !== lyricRequestSession || currentSong?.song_id !== songId) return;
       set({ lyricLrc: json.lrc || '', lyricKlyric: json.klyric || '' });
     } catch {
+      const state = get();
+      const currentSong = state.playlist[state.currentIndex];
+      if (requestSession !== lyricRequestSession || currentSong?.song_id !== songId) return;
       set({ lyricLrc: '', lyricKlyric: '' });
     }
   },
@@ -450,15 +637,28 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     try {
       const resp = await fetch(`/api/like/check/${songId}`);
       const json = await resp.json();
-      set({ isLiked: json.liked || false });
+      const liked = json.liked || false;
+      set((state) => {
+        const nextIds = liked
+          ? [...new Set([...state.likedTrackIds, songId])]
+          : state.likedTrackIds.filter((id) => id !== songId);
+        writeLikedTrackIds(nextIds);
+        return { isLiked: liked, likedTrackIds: nextIds };
+      });
     } catch {
-      set({ isLiked: false });
+      set((state) => ({ isLiked: state.likedTrackIds.includes(songId) }));
     }
   },
 
   toggleLike: async (songId) => {
     const next = !get().isLiked;
-    set({ isLiked: next });
+    set((state) => {
+      const nextIds = next
+        ? [...new Set([...state.likedTrackIds, songId])]
+        : state.likedTrackIds.filter((id) => id !== songId);
+      writeLikedTrackIds(nextIds);
+      return { isLiked: next, likedTrackIds: nextIds };
+    });
     // Get song info from current playlist for local save + taste update
     const song = get().playlist.find((s) => s.song_id === songId);
     try {
@@ -472,7 +672,51 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         }),
       });
     } catch {
-      set({ isLiked: !next });
+      set((state) => {
+        const rollbackIds = !next
+          ? [...new Set([...state.likedTrackIds, songId])]
+          : state.likedTrackIds.filter((id) => id !== songId);
+        writeLikedTrackIds(rollbackIds);
+        return { isLiked: !next, likedTrackIds: rollbackIds };
+      });
+    }
+  },
+
+  toggleTrackLike: async (songId) => {
+    const liked = get().likedTrackIds.includes(songId);
+    const next = !liked;
+    set((state) => {
+      const nextIds = next
+        ? [...new Set([...state.likedTrackIds, songId])]
+        : state.likedTrackIds.filter((id) => id !== songId);
+      writeLikedTrackIds(nextIds);
+      return {
+        likedTrackIds: nextIds,
+        isLiked: state.playlist[state.currentIndex]?.song_id === songId ? next : state.isLiked,
+      };
+    });
+    const song = get().playlist.find((s) => s.song_id === songId);
+    try {
+      await fetch(`/api/like/${songId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          like: next,
+          songName: song?.song_name || '',
+          artist: song?.artist || '',
+        }),
+      });
+    } catch {
+      set((state) => {
+        const rollbackIds = liked
+          ? [...new Set([...state.likedTrackIds, songId])]
+          : state.likedTrackIds.filter((id) => id !== songId);
+        writeLikedTrackIds(rollbackIds);
+        return {
+          likedTrackIds: rollbackIds,
+          isLiked: state.playlist[state.currentIndex]?.song_id === songId ? liked : state.isLiked,
+        };
+      });
     }
   },
 }));

@@ -1,15 +1,20 @@
 type EventHandler = (data: any) => void;
 
-const handlers: Record<string, EventHandler[]> = {};
+const handlers: Record<string, Set<EventHandler>> = {};
 
 export const wsClient = {
   socket: null as WebSocket | null,
   reconnectTimer: 0,
   reconnectDelay: 1000,
+  shouldReconnect: true,
 
   connect() {
-    if (this.socket?.readyState === WebSocket.OPEN) return;
+    if (
+      this.socket?.readyState === WebSocket.OPEN ||
+      this.socket?.readyState === WebSocket.CONNECTING
+    ) return;
 
+    this.shouldReconnect = true;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${location.host}/ws`;
     this.socket = new WebSocket(url);
@@ -29,14 +34,19 @@ export const wsClient = {
     };
 
     this.socket.onclose = () => {
+      if (!this.shouldReconnect) return;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
       this.reconnectTimer = window.setTimeout(() => this.connect(), this.reconnectDelay);
     };
   },
 
   on(event: string, fn: EventHandler) {
-    if (!handlers[event]) handlers[event] = [];
-    handlers[event].push(fn);
+    if (!handlers[event]) handlers[event] = new Set();
+    handlers[event].add(fn);
+  },
+
+  off(event: string, fn: EventHandler) {
+    handlers[event]?.delete(fn);
   },
 
   send(data: object) {
@@ -46,6 +56,7 @@ export const wsClient = {
   },
 
   disconnect() {
+    this.shouldReconnect = false;
     clearTimeout(this.reconnectTimer);
     this.socket?.close();
     this.socket = null;

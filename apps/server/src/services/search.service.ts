@@ -1,6 +1,7 @@
 import { contextService } from './context.service.js';
 import { memoryService, type SearchHints } from './memory.service.js';
 import { ncmService } from './ncm.service.js';
+import { getTemporalSearchTerms } from './temporalMusic.service.js';
 
 export interface SongCandidate {
   id: string;
@@ -50,6 +51,11 @@ function textOf(song: SongCandidate): string {
 
 function includesAny(haystack: string, needles: string[]): boolean {
   return needles.some((needle) => needle && haystack.includes(needle.toLowerCase()));
+}
+
+function isGenericMusicQuery(query: string): boolean {
+  const cleaned = query.replace(/\s+/g, '').toLowerCase();
+  return !cleaned || /^(音乐|歌|歌曲|听歌|来点音乐|随便|私人漫游|aidj|music)$/.test(cleaned);
 }
 
 export function createSearchService(options?: {
@@ -102,11 +108,17 @@ export function createSearchService(options?: {
     }
 
     const hints = await getMemoryHints();
+    const temporalTerms = getTemporalSearchTerms();
     const keyword = intent.query || hints.preferredArtists[0] || message;
-    const remote = await withPlayable(await ncm.search(keyword, Math.max(limit * 2, 20)), limit);
+    const remoteKeyword = isGenericMusicQuery(keyword)
+      ? temporalTerms[0]
+      : intent.reason === 'scene'
+        ? `${keyword} ${temporalTerms[0]}`
+        : keyword;
+    const remote = await withPlayable(await ncm.search(remoteKeyword, Math.max(limit * 2, 20)), limit);
     const remoteRanked = remote.sort((a, b) => score(b, keyword, hints) - score(a, keyword, hints));
     if (remoteRanked.length > 0) {
-      return { intent, keyword, source: 'ncm' as const, songs: remoteRanked.slice(0, limit) };
+      return { intent, keyword: remoteKeyword, source: 'ncm' as const, songs: remoteRanked.slice(0, limit) };
     }
 
     const lowerKeyword = keyword.toLowerCase();

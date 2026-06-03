@@ -6,6 +6,7 @@ import { ncmService } from '../services/ncm.service.js';
 import { ttsService } from '../services/tts.service.js';
 import { searchService } from '../services/search.service.js';
 import { memoryService } from '../services/memory.service.js';
+import { formatTemporalMusicGuidance, getTemporalSearchTerms } from '../services/temporalMusic.service.js';
 
 const AIDJ_TRACK_COUNT = 10;
 
@@ -87,10 +88,79 @@ function normalizePlaylistOpening(
   return end > 120 ? clipped.slice(0, end + 1) : `${clipped}。`;
 }
 
-function buildPlaylistOpeningPrompt(userInput: string, songInfoStr: string, currentTime: string, mode: 'music' | 'aidj') {
+function countMentionedSongs(
+  say: string,
+  songs: Array<{ name: string; artist?: string; intro?: string }>,
+): number {
+  return songs.reduce((count, song) => {
+    const name = (song.name || '').trim();
+    if (!name || name.length < 2) return count;
+    return say.includes(name) ? count + 1 : count;
+  }, 0);
+}
+
+function countMentionedArtists(
+  say: string,
+  songs: Array<{ name: string; artist?: string; intro?: string }>,
+): number {
+  const artists = new Set(
+    songs
+      .map((song) => (song.artist || '').trim())
+      .filter((artist) => artist.length >= 2),
+  );
+  let count = 0;
+  for (const artist of artists) {
+    if (say.includes(artist)) count++;
+  }
+  return count;
+}
+
+function mentionsExactClockTime(say: string): boolean {
+  return /(?:凌晨|早上|上午|中午|下午|傍晚|晚上)?[零一二三四五六七八九十两\d]{1,3}点(?:[零一二三四五六七八九十两\d]{1,3}分)?/.test(say)
+    || /\b\d{1,2}:\d{2}\b/.test(say);
+}
+
+function repairPlaylistOpeningIfNeeded(
+  say: string,
+  songs: Array<{ name: string; artist?: string; intro?: string }>,
+  scene: 'daily' | 'privateFm' | 'playlist' | 'music' = 'music',
+): string {
+  const cleaned = normalizePlaylistOpening(say, songs);
+  const songMentions = countMentionedSongs(cleaned, songs);
+  const artistMentions = countMentionedArtists(cleaned, songs);
+  const needsRepair = songMentions > 1 || artistMentions > 1 || mentionsExactClockTime(cleaned);
+  if (!needsRepair) return cleaned;
+
+  const featured = songs.find((song) => cleaned.includes(song.name)) || songs[0];
+  const title = featured?.name ? `《${featured.name}》` : '第一首歌';
+  const artist = featured?.artist ? `${featured.artist} 的` : '';
+  const lane = scene === 'privateFm'
+    ? '这段私人 FM'
+    : scene === 'daily'
+      ? '今天这组每日推荐'
+      : '这组歌';
+  return [
+    '先不把这批歌一首一首摊开说，那样声音会变成清单。',
+    `我更想把注意力放在 ${artist}${title} 上：它不是急着把情绪推高的歌，而是把人从白天的硬壳里慢慢松出来。`,
+    `${lane}就沿着这种感觉往下走，有一点节奏，也留一点空白。`,
+    '你不用急着判断哪首最好，先让房间安静一点，让第一段旋律把门打开。这里是 Claudio，我们慢慢听。',
+  ].join('');
+}
+
+function buildPlaylistOpeningPrompt(userInput: string, songInfoStr: string, currentTime: string, mode: 'music' | 'aidj' | 'privateFm') {
+  const temporalGuidance = formatTemporalMusicGuidance(currentTime);
+  const sceneRule = mode === 'privateFm'
+    ? 'This is a private FM request. Say it as a personal radio flow, not "daily recommendation".'
+    : mode === 'aidj'
+      ? 'This is an AIDJ radio request.'
+      : 'This is a music playlist request.';
   return `User request: ${userInput}
 Current local time: ${currentTime}
 Mode: ${mode}
+Scene: ${sceneRule}
+
+Time-of-day music guidance:
+${temporalGuidance}
 
 Songs that will play next:
 ${songInfoStr}
@@ -98,21 +168,24 @@ ${songInfoStr}
 Write one continuous Mandarin FM opening for this playlist.
 Hard rules:
 - The "say" field must be 150-240 Chinese characters.
-- Mention at most two song names total. Usually choose one strongest recommendation and focus on it.
+- Mention at most one song name total. Choose one strongest recommendation and focus on it.
+- Do not mention multiple artists as a roll call. Do not say "后面还有..." followed by other songs or artists.
 - Do not list the playlist. Do not introduce songs one by one. Do not write per-song intros.
+- Apply the time-of-day music guidance to every generated playlist. It is a soft musical prior, not a hard ban: night and late-night sets should feel more eased and less jarring by default, but should not all collapse into sleepy low-energy music.
 - Match the current time exactly. If it is noon or afternoon, do not say "night", "late night", or "夜里的小广播".
+- Do not say exact clock time such as "晚上九点四十二分" or "21:42". Use only a broad feeling of the time when it is truly relevant.
 - Avoid reusable template phrases, especially: "把呼吸放慢一点", "交给歌，也交给你自己", "屏幕边缘", "夜里的小广播", "不需要立刻得到答案".
 - Use recent conversation and memory only when it is actually relevant. Single likes are weak signals, not proof of fixed taste.
 - Sound like a real warm male FM host, concrete and present, not motivational, not philosophical padding.
 
 Return strict JSON only:
-{"theme":"主题","say":"150-240字中文电台开场，只重点讲1首歌，最多自然提到2首歌名","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}`;
+{"theme":"主题","say":"150-240字中文电台开场，只重点讲1首歌，只自然提到1首歌名","songs":[{"id":"歌曲id","name":"歌名","artist":"歌手"}]}`;
 }
 
-async function collectAidjSongs(targetCount = AIDJ_TRACK_COUNT) {
-  const songs: Array<{ id: string; name: string; artist: string; album?: string; duration?: number }> = [];
-  const seen = new Set<string>();
-  const pushUnique = (items: Array<{ id: string; name: string; artist: string; album?: string; duration?: number }>) => {
+async function collectAidjSongs(targetCount = AIDJ_TRACK_COUNT, currentTime = '', excludeSongIds: string[] = []) {
+  const songs: Array<{ id: string; name: string; artist: string; album?: string; duration?: number; coverUrl?: string }> = [];
+  const seen = new Set<string>(excludeSongIds.filter(Boolean));
+  const pushUnique = (items: Array<{ id: string; name: string; artist: string; album?: string; duration?: number; coverUrl?: string }>) => {
     for (const song of items) {
       if (!song?.id || seen.has(song.id)) continue;
       seen.add(song.id);
@@ -120,6 +193,12 @@ async function collectAidjSongs(targetCount = AIDJ_TRACK_COUNT) {
       if (songs.length >= targetCount) break;
     }
   };
+
+  for (const query of getTemporalSearchTerms(currentTime).slice(0, 2)) {
+    if (songs.length >= Math.ceil(targetCount / 2)) break;
+    const temporalSongs = await ncmService.search(query, 6);
+    pushUnique(temporalSongs);
+  }
 
   for (let attempt = 0; attempt < 4 && songs.length < targetCount; attempt++) {
     const fmSongs = await ncmService.getPersonalFm();
@@ -223,15 +302,33 @@ export function registerChatRoutes(app: FastifyInstance) {
     // --- Semantic intent detection (BEFORE opening SSE) ---
     const ctx = await contextService.assembleContext(message, 'chat');
     const userMsg = message.trim();
+    const wantsPrivateFm = /私人\s*fm|私人\s*FM|私人漫游|personal\s*fm/i.test(userMsg);
     const wantsDaily = /每日推荐|今日推荐|日推|daily/.test(userMsg);
     const wantsPlaylist = /歌单|收藏|我的.*歌|红心|我喜欢|我.*喜欢/.test(userMsg);
 
     let candidates = contextService.getCandidates(200);
     let candidateStr = '';
     let userPrompt = '';
+    let playlistScene: 'daily' | 'privateFm' | 'playlist' | 'music' = 'music';
 
     // Only call NCM when clearly matching intent
-    if (wantsDaily) {
+    if (wantsPrivateFm) {
+      playlistScene = 'privateFm';
+      try {
+        const fmSongs = await collectAidjSongs(AIDJ_TRACK_COUNT, ctx.time);
+        if (fmSongs.length > 0) {
+          candidates = fmSongs.map((song) => ({
+            id: song.id,
+            name: song.name,
+            artist: song.artist,
+            album: song.album || '',
+          }));
+          candidateStr = fmSongs.map((s) => `[${s.id}] ${s.name} - ${s.artist || '未知'}`).join('\n');
+          userPrompt = `她说: ${message}\n\n这是私人 FM 队列，从里面选 10 首推给她。`;
+        }
+      } catch { /* fall through to local candidates */ }
+    } else if (wantsDaily) {
+      playlistScene = 'daily';
       try {
         const daily = await ncmService.getDailyRecommend();
         if (daily.length > 0) {
@@ -241,6 +338,7 @@ export function registerChatRoutes(app: FastifyInstance) {
         }
       } catch { /* fall through to local candidates */ }
     } else if (wantsPlaylist) {
+      playlistScene = 'playlist';
       try {
         const playlists = await ncmService.getUserPlaylists();
         if (playlists.length > 0) {
@@ -296,9 +394,15 @@ export function registerChatRoutes(app: FastifyInstance) {
     req.raw.on('close', onClose);
 
     try {
+      const playlistRequest = wantsPrivateFm || wantsDaily || wantsPlaylist;
       const messages = [
         { role: 'system' as const, content: systemPrompt },
-        { role: 'user' as const, content: `候选歌曲:\n${candidateStr}\n\n${userPrompt}` },
+        {
+          role: 'user' as const,
+          content: playlistRequest
+            ? buildPlaylistOpeningPrompt(message, candidateStr, ctx.time, wantsPrivateFm ? 'privateFm' : 'music')
+            : `候选歌曲:\n${candidateStr}\n\n${userPrompt}`,
+        },
       ];
 
       let fullOutput = '';
@@ -311,7 +415,7 @@ export function registerChatRoutes(app: FastifyInstance) {
       if (clientGone) { req.raw.removeListener('close', onClose); reply.raw.end(); return reply; }
 
       // Parse output: may or may not have songs
-      let output: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string }>; play?: Array<{ id: string; name: string; artist: string }> };
+      let output: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string; coverUrl?: string }>; play?: Array<{ id: string; name: string; artist: string; coverUrl?: string }> };
       try {
         output = JSON.parse(fullOutput);
       } catch {
@@ -319,9 +423,13 @@ export function registerChatRoutes(app: FastifyInstance) {
         output = match ? JSON.parse(match[0]) : { say: fullOutput.trim() || '嗯，我在听。' };
       }
 
-      const songs = output.songs || output.play || [];
+      const songs = (output.songs || output.play || []).map((song) => ({
+        ...song,
+        coverUrl: song.coverUrl || (candidates.find((candidate) => candidate.id === song.id) as { coverUrl?: string } | undefined)?.coverUrl,
+      }));
       const hasSongs = songs.length > 0;
-      const ttsResult = await ttsService.synthesize(output.say);
+      const say = hasSongs ? repairPlaylistOpeningIfNeeded(output.say, songs, playlistScene) : output.say;
+      const ttsResult = await ttsService.synthesize(say);
 
       // Save detected mood
       if ((output as any).mood && typeof (output as any).mood === 'string') {
@@ -331,14 +439,14 @@ export function registerChatRoutes(app: FastifyInstance) {
       const djMsgId = crypto.randomUUID();
       const djTimestamp = new Date().toISOString();
       await messagesRepo.insert({
-        id: djMsgId, role: 'dj', content: output.say, tts_url: ttsResult.audioUrl || null, played: 0, created_at: djTimestamp,
+        id: djMsgId, role: 'dj', content: say, tts_url: ttsResult.audioUrl || null, played: 0, created_at: djTimestamp,
       });
 
       reply.raw.write(`data: ${JSON.stringify({
-        done: true, id: djMsgId, say: output.say, ttsUrl: ttsResult.audioUrl,
+        done: true, id: djMsgId, say, ttsUrl: ttsResult.audioUrl,
         alignment: ttsResult.alignment,
         theme: output.theme || '',
-        songs: songs.map(s => ({ id: s.id, name: s.name, artist: s.artist })),
+        songs: songs.map(s => ({ id: s.id, name: s.name, artist: s.artist, coverUrl: s.coverUrl })),
         songIntros: {},
         songIntroAlignments: {},
         chatOnly: !hasSongs,
@@ -358,12 +466,15 @@ export function registerChatRoutes(app: FastifyInstance) {
 
   // AIDJ: NCM personal FM recommendations + DeepSeek opening + MiMo TTS
   app.post('/api/aidj', async (req, reply) => {
-    const { message } = req.body as { message: string };
+    const { message, excludeSongIds = [] } = req.body as { message: string; excludeSongIds?: string[] };
     const userInput = (message || '来点音乐').trim();
 
-    let clientGoneAidj = false;
-    const onCloseAidj = () => { clientGoneAidj = true; };
-    req.raw.on('close', onCloseAidj);
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
 
     const aidjUserMsgId = crypto.randomUUID();
     const aidjUserTimestamp = new Date().toISOString();
@@ -372,12 +483,11 @@ export function registerChatRoutes(app: FastifyInstance) {
     });
 
     try {
+      const ctx = await contextService.assembleContext(userInput, 'aidj');
       // 1. Get a stable 10-song AIDJ queue. Personal FM often returns 3 songs per call.
-      const songList = await collectAidjSongs(AIDJ_TRACK_COUNT);
-      if (clientGoneAidj) { req.raw.removeListener('close', onCloseAidj); reply.raw.end(); return reply; }
+      const songList = await collectAidjSongs(AIDJ_TRACK_COUNT, ctx.time, excludeSongIds);
 
       // 2. DeepSeek opening monologue
-      const ctx = await contextService.assembleContext(userInput, 'aidj');
       const recentHistory = await messagesRepo.getRecent(12);
       const historyStr = recentHistory
         .filter((m) => m.role !== 'system' && !m.content?.startsWith('['))
@@ -396,12 +506,9 @@ export function registerChatRoutes(app: FastifyInstance) {
 
       let fullOutput = '';
       for await (const chunk of deepseekService.chat(openingPrompt)) {
-        if (clientGoneAidj) break;
         fullOutput += chunk;
         reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
       }
-
-      if (clientGoneAidj) { req.raw.removeListener('close', onCloseAidj); reply.raw.end(); return reply; }
 
       // Parse opening
       let opening: { theme?: string; say: string; songs?: Array<{ id: string; name: string; artist: string; intro: string }> } = { say: '来听歌吧。' };
@@ -413,7 +520,7 @@ export function registerChatRoutes(app: FastifyInstance) {
       }
 
       const songs = songList.map((s) => ({
-        id: s.id, name: s.name, artist: s.artist,
+        id: s.id, name: s.name, artist: s.artist, coverUrl: s.coverUrl,
       }));
       opening.say = normalizePlaylistOpening(opening.say, songs);
       const ttsResult = await ttsService.synthesize(opening.say);
@@ -431,7 +538,7 @@ export function registerChatRoutes(app: FastifyInstance) {
         ttsUrl: ttsResult.audioUrl,
         alignment: ttsResult.alignment,
         theme: opening.theme || '私人漫游',
-        songs: songs.map(s => ({ id: s.id, name: s.name, artist: s.artist })),
+        songs: songs.map(s => ({ id: s.id, name: s.name, artist: s.artist, coverUrl: s.coverUrl })),
         songIntros: {},
         songIntroAlignments: {},
         source: 'aidj',
@@ -439,12 +546,9 @@ export function registerChatRoutes(app: FastifyInstance) {
         djTimestamp,
       })}\n\n`);
     } catch (err: any) {
-      if (!clientGoneAidj) {
-        reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'AIDJ failed' })}\n\n`);
-      }
+      reply.raw.write(`data: ${JSON.stringify({ error: err.message || 'AIDJ failed' })}\n\n`);
     }
 
-    req.raw.removeListener('close', onCloseAidj);
     reply.raw.end();
     return reply;
   });

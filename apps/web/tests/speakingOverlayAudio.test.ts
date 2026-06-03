@@ -53,11 +53,26 @@ test('home and speaking overlay share Claudio identity sizing and profile entry'
     path.resolve(__dirname, '../src/pages/HomePage.tsx'),
     'utf-8',
   );
+  const profileCard = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/ProfileCard.tsx'),
+    'utf-8',
+  );
   const css = fs.readFileSync(
     path.resolve(__dirname, '../src/styles/global.css'),
     'utf-8',
   );
+  const index = fs.readFileSync(
+    path.resolve(__dirname, '../index.html'),
+    'utf-8',
+  );
 
+  assert.match(homePage, /<div className="speaking-name">Claudio<\/div>/);
+  assert.match(profileCard, /<span>Claudio<\/span>/);
+  assert.match(index, /family=Doto:wght@400;700/);
+  assert.match(css, /\.page-logo[\s\S]*font-family: 'Doto', 'Space Mono', monospace/);
+  assert.match(css, /\.speaking-name[\s\S]*font-family: 'Doto', 'Space Mono', monospace/);
+  assert.match(css, /\.chat-bar[\s\S]*font-family: 'Doto', 'Space Mono', monospace/);
+  assert.match(css, /\.profile-card-head strong[\s\S]*font-family: 'Doto', 'Space Mono', monospace/);
   assert.match(css, /\.page-logo[\s\S]*font-size: clamp\(28px, 6vw, 38px\)/);
   assert.match(css, /\.speaking-name[\s\S]*font-size: clamp\(28px, 6vw, 38px\)/);
   assert.match(css, /\.speaking-hero[\s\S]*padding: var\(--head-pt, 16px\) var\(--head-px, 28px\) 0/);
@@ -137,7 +152,7 @@ test('home surfaces keep subtle elevation in light and dark themes', () => {
   assert.match(css, /\.card\[data-theme="light"\][\s\S]*--panel-shadow:/);
   assert.match(css, /\.queue-bar[\s\S]*box-shadow: var\(--panel-shadow-soft\)/);
   assert.match(css, /\.chat-bar[\s\S]*box-shadow: var\(--panel-shadow-soft\)/);
-  assert.match(css, /\.chat-bar[\s\S]*width: calc\(100% - 2 \* var\(--queue-px, 28px\)\)/);
+  assert.match(css, /\.chat-bar[\s\S]*width: calc\(100% - 2 \* var\(--queue-px, 0px\)\)/);
   assert.match(css, /\.chat-bar[\s\S]*background: #2A2A2E/);
   assert.match(css, /\.player-strip[\s\S]*background: transparent/);
   assert.match(css, /\.chat-bubble[\s\S]*box-shadow:/);
@@ -160,9 +175,13 @@ test('music and volume tracks show hover thumbs without permanent knobs', () => 
   assert.match(css, /\.speaking-track:hover span::after[\s\S]*opacity: 1/);
 });
 
-test('music progress and volume tracks support pointer dragging', () => {
+test('immersive music progress and compact queue volume support pointer dragging', () => {
   const homePage = fs.readFileSync(
     path.resolve(__dirname, '../src/pages/HomePage.tsx'),
+    'utf-8',
+  );
+  const globalPlayer = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/GlobalPlayerBar.tsx'),
     'utf-8',
   );
   const css = fs.readFileSync(
@@ -172,8 +191,10 @@ test('music progress and volume tracks support pointer dragging', () => {
 
   assert.match(homePage, /function startTrackDrag/);
   assert.match(homePage, /window\.addEventListener\('pointermove'/);
-  assert.match(homePage, /onPointerDown=\{\(e\) => startTrackDrag\(e, p\.seekTo\)\}/);
-  assert.match(homePage, /onPointerDown=\{\(e\) => startTrackDrag\(e, p\.setVolume\)\}/);
+  assert.match(globalPlayer, /function startTrackDrag/);
+  assert.match(globalPlayer, /window\.addEventListener\('pointermove'/);
+  assert.doesNotMatch(globalPlayer, /onPointerDown=\{\(event\) => startTrackDrag\(event, onSeek\)\}/);
+  assert.match(globalPlayer, /onPointerDown=\{\(event\) => startTrackDrag\(event, onVolume\)\}/);
   assert.match(homePage, /onPointerDown=\{\(e\) => startTrackDrag\(e, onSeekMusic\)\}/);
   assert.equal(homePage.includes('className="progress-line" onClick'), false);
   assert.equal(homePage.includes('className="vol-track" onClick'), false);
@@ -221,16 +242,16 @@ test('speaking overlay fully covers the home card chrome while open', () => {
   assert.match(css, /\.card:has\(\.speaking-overlay\)::before,[\s\S]*\.card:has\(\.speaking-overlay\)::after[\s\S]*opacity: 0/);
 });
 
-test('stage and card keep contrast with living ambient light', () => {
+test('card keeps contrast while the shared ambient mesh owns the outer background', () => {
   const css = fs.readFileSync(
     path.resolve(__dirname, '../src/styles/global.css'),
     'utf-8',
   );
 
-  assert.match(css, /\.stage::before[\s\S]*animation: ambient-bloom/);
-  assert.match(css, /\.stage::after[\s\S]*mix-blend-mode: screen/);
-  assert.match(css, /@keyframes ambient-bloom/);
-  assert.match(css, /@keyframes ambient-drift[\s\S]*17%[\s\S]*39%[\s\S]*61%[\s\S]*83%/);
+  assert.doesNotMatch(css, /\.stage::before/);
+  assert.doesNotMatch(css, /\.stage::after/);
+  assert.match(css, /\.station-ambient-mesh span:nth-child\(12\)/);
+  assert.match(css, /@keyframes station-ambient-mesh-flow/);
   assert.match(css, /\.card[\s\S]*radial-gradient\(ellipse 108% 72% at 50% 0%/);
   assert.match(css, /\.card[\s\S]*radial-gradient\(ellipse 72% 48% at 50% 48%/);
 });

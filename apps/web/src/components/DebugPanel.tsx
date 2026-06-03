@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 
 const CONTROLS = [
-  { label: 'Card Width', prop: '--card-w', min: 500, max: 800, step: 2, unit: 'px', def: 560 },
-  { label: 'Card MaxH', prop: '--card-maxh', min: 800, max: 1200, step: 10, unit: 'px', def: 1070 },
+  { label: 'Card Width', prop: '--card-w', min: 500, max: 800, step: 2, unit: 'px', def: 650 },
+  { label: 'Card MaxH', prop: '--card-maxh', min: 800, max: 1200, step: 10, unit: 'px', def: 1200 },
   { label: 'Header Pad T', prop: '--head-pt', min: 0, max: 60, step: 1, unit: 'px', def: 40 },
   { label: 'Header Pad X', prop: '--head-px', min: 10, max: 60, step: 1, unit: 'px', def: 41 },
   { label: 'Hero Height %', prop: '--hero-h', min: 15, max: 50, step: 1, unit: '%', def: 25 },
   { label: 'Player Pad Y', prop: '--player-py', min: 4, max: 30, step: 1, unit: 'px', def: 14 },
   { label: 'Player Pad X', prop: '--player-px', min: 10, max: 50, step: 1, unit: 'px', def: 28 },
-  { label: 'Queue Margin X', prop: '--queue-px', min: 0, max: 80, step: 1, unit: 'px', def: 7 },
+  { label: 'Queue Margin X', prop: '--queue-px', min: 0, max: 80, step: 1, unit: 'px', def: 0 },
   { label: 'Queue Inner Pad', prop: '--queue-pad', min: 0, max: 30, step: 1, unit: 'px', def: 17 },
   { label: 'Queue Pad Y', prop: '--queue-py', min: 4, max: 24, step: 1, unit: 'px', def: 8 },
   { label: 'Claudio Margin X', prop: '--chatbar-px', min: 0, max: 80, step: 1, unit: 'px', def: 8 },

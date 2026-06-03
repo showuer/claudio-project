@@ -1,6 +1,5 @@
-import { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
-export default function Stage({ children }: { children: ReactNode }) {
-  return <div className="stage">{children}</div>;
+export default function Stage({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return <div className="stage" style={style}>{children}</div>;
 }
-

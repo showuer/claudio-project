@@ -57,7 +57,10 @@ export const contextService = {
     const fullSystem = `${systemPrompt}
 
 ## Current playback rule
-When recommending songs, write one continuous playlist opening in "say" only. Do not write per-song intros. Return songs as metadata only: id, name, artist. The opening should feel like one connected FM monologue, with each sentence flowing into the next.`
+When recommending songs, write one continuous playlist opening in "say" only. Do not write per-song intros. Return songs as metadata only: id, name, artist. The opening should feel like one connected FM monologue, with each sentence flowing into the next.
+
+## Time-of-day music rule
+Every generated playlist must consider the current time as a soft musical prior. Morning can be cleaner/brighter; noon should loosen up; afternoon can be steady; evening can keep warmth and some movement; night and late night should usually be more eased and less jarring, but not forcibly flattened into only low-energy sleep music. Explicit user intent overrides the prior, while sequencing should still avoid abrupt mismatch.`
       .replace('{{memoryProfile}}', memoryProfile)
       .replace('{{weather}}', weatherStr)
       .replace('{{time}}', timeStr)

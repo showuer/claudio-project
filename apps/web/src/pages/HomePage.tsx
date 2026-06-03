@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { getMusicAudioElement, usePlayerStore, Song } from '../stores/playerStore';
+import type { StationMode } from '../stores/playerStore';
 import { useChatStore } from '../stores/chatStore';
+import { apiClient } from '../api/client';
 import { wsClient } from '../api/ws';
 import { DotMatrixClock } from '../components/DotMatrixDisplay';
 import { ProfileCard } from '../components/ProfileCard';
+import { StationSurface } from '../components/StationSurface';
+import { GlobalPlayerBar } from '../components/GlobalPlayerBar';
 
 const AI_AVATAR = '/avatars/codex.png';
 const USER_AVATAR = '/avatars/me.png';
+type ActiveStationMode = Exclude<StationMode, ''>;
+type ModePlaylistMap = Record<ActiveStationMode, Song[]>;
+type ModeCursorMap = Record<ActiveStationMode, string>;
+type RefreshingModeMap = Record<ActiveStationMode, boolean>;
 
 type AlignmentSegment = { text: string; start: number; end: number; words?: AlignmentSegment[] };
 type NarrationMessage = {
@@ -190,6 +198,43 @@ function startTrackDrag(e: ReactPointerEvent<HTMLDivElement>, onChange: (pct: nu
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', cleanup);
   window.addEventListener('pointercancel', cleanup);
+}
+
+function emptyModePlaylists(): ModePlaylistMap {
+  return {
+    aidj: [],
+    'random-infinite': [],
+    'focus-cafe': [],
+    'focus-library': [],
+  };
+}
+
+function emptyModeCursors(): ModeCursorMap {
+  return {
+    aidj: '',
+    'random-infinite': '',
+    'focus-cafe': '',
+    'focus-library': '',
+  };
+}
+
+function emptyRefreshingModes(): RefreshingModeMap {
+  return {
+    aidj: false,
+    'random-infinite': false,
+    'focus-cafe': false,
+    'focus-library': false,
+  };
+}
+
+function mapStationSongs(songs: any[]): Song[] {
+  return (songs || []).map((s: any) => ({
+    song_id: s.id,
+    song_name: s.name,
+    artist: s.artist,
+    coverUrl: s.coverUrl,
+    url: s.url,
+  }));
 }
 
 function SpeakingOverlay({
@@ -561,13 +606,19 @@ export default function HomePage() {
 
   const [input, setInput] = useState('');
   const [time, setTime] = useState(new Date());
-  const [queueOpen, setQueueOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [speakingOpen, setSpeakingOpen] = useState(false);
   const [imgErr, setImgErr] = useState(false);
   const [listening, setListening] = useState(false);
+  const [stationPreviewMode, setStationPreviewMode] = useState<StationMode>('');
+  const [stationViewMode, setStationViewMode] = useState<StationMode>(() => usePlayerStore.getState().activeStationMode || '');
+  const [stationSurfaceMounted, setStationSurfaceMounted] = useState(() => Boolean(usePlayerStore.getState().activeStationMode));
+  const [modePlaylists, setModePlaylists] = useState<ModePlaylistMap>(() => emptyModePlaylists());
+  const [modeCursors, setModeCursors] = useState<ModeCursorMap>(() => emptyModeCursors());
+  const [refreshingModes, setRefreshingModes] = useState<RefreshingModeMap>(() => emptyRefreshingModes());
   const recognitionRef = useRef<any>(null);
   const speakingSessionRef = useRef({ narrationId: '', sawPlaying: false });
+  const stationRefillInFlightRef = useRef(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('claudio-theme');
     return saved === 'light' ? 'light' : 'dark';
@@ -585,7 +636,7 @@ export default function HomePage() {
     c.loadHistory();
     wsClient.connect();
 
-    wsClient.on('dj_message', (data: any) => {
+    const handleDjMessage = (data: any) => {
       c.addMessage({
         id: data.id || (() => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36)+Math.random().toString(36).slice(2); } })(), role: 'dj', content: data.say,
         ttsUrl: data.ttsUrl, alignment: data.alignment, status: 'done', played: false, timestamp: data.timestamp || new Date().toISOString(),
@@ -594,18 +645,23 @@ export default function HomePage() {
       if (data.songs?.length) {
         const songs = data.songs.map((s: any) => ({
           song_id: s.id, song_name: s.name, artist: s.artist,
+          coverUrl: s.coverUrl,
         }));
         p.queuePlaylist(songs, data.ttsUrl || '');
-        setQueueOpen(true);
       }
       else if (data.play?.length) {
         p.queuePlaylist(data.play.map((s: any) => ({
           song_id: s.id, song_name: s.name, artist: s.artist,
+          coverUrl: s.coverUrl,
         })), data.ttsUrl || '');
-        setQueueOpen(true);
       }
-    });
-    return () => { wsClient.disconnect(); window.speechSynthesis.cancel(); };
+    };
+    wsClient.on('dj_message', handleDjMessage);
+    return () => {
+      wsClient.off('dj_message', handleDjMessage);
+      wsClient.disconnect();
+      window.speechSynthesis.cancel();
+    };
   }, []);
 
   useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
@@ -648,12 +704,122 @@ export default function HomePage() {
 
   const song = p.playlist.length && p.currentIndex >= 0 && p.currentIndex < p.playlist.length
     ? p.playlist[p.currentIndex] : null;
+  const visibleStationMode = (stationPreviewMode || stationViewMode || p.activeStationMode) as ActiveStationMode | '';
+  const stationSurfaceMode = (stationPreviewMode || stationViewMode || p.activeStationMode || 'aidj') as ActiveStationMode;
+  const enterRadioSpace = useCallback(() => {
+    setStationViewMode(p.activeStationMode || 'aidj');
+    setStationPreviewMode('');
+  }, [p.activeStationMode]);
+  const leaveStationView = useCallback(() => {
+    setStationViewMode('');
+    setStationPreviewMode('');
+  }, []);
+  const startStationMode = useCallback(async (mode: Exclude<StationMode, ''>) => {
+    const previousViewMode = stationViewMode;
+    setStationViewMode(mode);
+    if (mode === 'aidj') {
+      setStationPreviewMode('');
+      if ((p.activeStationMode || !p.playlist.length) && !c.isStreaming) void c.sendAidj('来点音乐');
+      return;
+    }
+    if (mode === p.activeStationMode) {
+      setStationPreviewMode('');
+      return;
+    }
+    if (p.activeStationMode) setStationPreviewMode(mode);
+    if (modePlaylists[mode].length) {
+      p.startStation(mode, modePlaylists[mode], modeCursors[mode], p.stationHealth || 'ok');
+      setStationPreviewMode('');
+      return;
+    }
+    try {
+      const excludeSongIds = p.playlist.map((item) => item.song_id);
+      const data = await apiClient.stationStart(mode, excludeSongIds);
+      const stationSongs = mapStationSongs(data.songs || []);
+      setModePlaylists((state) => ({ ...state, [mode]: stationSongs }));
+      setModeCursors((state) => ({ ...state, [mode]: data.cursor || '' }));
+      p.startStation(mode, stationSongs, data.cursor || '', data.health || 'ok');
+    } catch {
+      setStationViewMode(previousViewMode || '');
+      usePlayerStore.setState({ stationHealth: 'error', stationBuffering: false });
+    } finally {
+      setStationPreviewMode('');
+    }
+  }, [c.isStreaming, c.sendAidj, modeCursors, modePlaylists, p, p.playlist.length, stationViewMode]);
+
+  const refreshStationMode = useCallback(async (mode: ActiveStationMode) => {
+    if (mode === 'aidj') {
+      if (!c.isStreaming) void c.sendAidj('来点音乐');
+      return;
+    }
+    if (refreshingModes[mode]) return;
+    setRefreshingModes((state) => ({ ...state, [mode]: true }));
+    try {
+      const excludeSongIds = [
+        ...modePlaylists[mode].map((item) => item.song_id),
+        ...p.playlist.map((item) => item.song_id),
+      ];
+      const data = await apiClient.stationStart(mode, excludeSongIds);
+      const stationSongs = mapStationSongs(data.songs || []);
+      setModePlaylists((state) => ({ ...state, [mode]: stationSongs }));
+      setModeCursors((state) => ({ ...state, [mode]: data.cursor || state[mode] || '' }));
+    } finally {
+      setRefreshingModes((state) => ({ ...state, [mode]: false }));
+    }
+  }, [c.isStreaming, c.sendAidj, modePlaylists, p.playlist, refreshingModes]);
+
+  useEffect(() => {
+    if (stationViewMode || p.activeStationMode) setStationSurfaceMounted(true);
+  }, [p.activeStationMode, stationViewMode]);
+
+  useEffect(() => {
+    if (
+      !p.activeStationMode &&
+      stationViewMode &&
+      stationViewMode !== 'aidj' &&
+      !modePlaylists[stationViewMode]?.length &&
+      !p.playlist.length
+    ) {
+      setStationViewMode('');
+    }
+  }, [modePlaylists, p.activeStationMode, p.playlist.length, stationViewMode]);
+
+  useEffect(() => {
+    const mode = p.activeStationMode as ActiveStationMode;
+    if (!mode || !p.playlist.length || modePlaylists[mode].length) return;
+    setModePlaylists((state) => ({ ...state, [mode]: p.playlist }));
+    setModeCursors((state) => ({ ...state, [mode]: p.stationCursor || state[mode] || '' }));
+  }, [modePlaylists, p.activeStationMode, p.playlist, p.stationCursor]);
+
+  useEffect(() => {
+    if (!p.activeStationMode || !p.stationCursor || stationRefillInFlightRef.current) return;
+    if (p.playlist.length === 0) return;
+    const remaining = p.playlist.length - p.currentIndex - 1;
+    if (remaining <= 5) {
+      stationRefillInFlightRef.current = true;
+      usePlayerStore.setState({ stationHealth: 'refilling', stationBuffering: true });
+      const excludeSongIds = p.playlist.map((item) => item.song_id);
+      apiClient.stationNext(p.activeStationMode, p.stationCursor, excludeSongIds)
+        .then((data) => {
+          const stationSongs = mapStationSongs(data.songs || []);
+          p.appendStationSongs(stationSongs, data.cursor || p.stationCursor, data.health || 'ok');
+          const mode = p.activeStationMode as ActiveStationMode;
+          setModePlaylists((state) => ({ ...state, [mode]: [...state[mode], ...stationSongs] }));
+          setModeCursors((state) => ({ ...state, [mode]: data.cursor || p.stationCursor }));
+        })
+        .catch(() => {
+          usePlayerStore.setState({ stationHealth: 'error', stationBuffering: false });
+        })
+        .finally(() => {
+          stationRefillInFlightRef.current = false;
+        });
+    }
+  }, [p.activeStationMode, p.stationCursor, p.currentIndex, p.playlist.length]);
   const latestNarration = useMemo(() => {
     const msg = [...c.messages].reverse().find((m: any) => m.role === 'dj' && m.ttsUrl && m.status === 'done');
     return (msg || null) as NarrationMessage | null;
   }, [c.messages]);
   const active = p.musicPlaying || p.djNarrating;
-  const pct = p.durationMs > 0 ? (p.progressMs / p.durationMs) * 100 : 0;
 
   useEffect(() => {
     if (!speakingOpen) {
@@ -690,8 +856,15 @@ export default function HomePage() {
   useEffect(() => {
     if (song?.song_id) {
       p.fetchLikeStatus(song.song_id);
+      p.fetchLyric(song.song_id);
     }
   }, [song?.song_id]);
+
+  useEffect(() => {
+    if (stationViewMode === 'aidj' && song?.song_id && !p.lyricLrc) {
+      p.fetchLyric(song.song_id);
+    }
+  }, [stationViewMode]);
 
   const wd = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
   const mo = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -708,10 +881,40 @@ export default function HomePage() {
     <>
       <audio ref={ttsRef} preload="auto" style={{ display: 'none' }} />
 
+      {stationSurfaceMounted && (
+        <div className={`station-view-shell ${stationViewMode ? 'is-active' : ''}`} aria-hidden={!stationViewMode}>
+          <StationSurface
+          mode={stationSurfaceMode}
+          song={song}
+          progressMs={p.progressMs}
+          durationMs={p.durationMs}
+          volume={p.volume}
+          playlist={p.playlist}
+          currentIndex={p.currentIndex}
+          musicPlaying={p.musicPlaying}
+          likedTrackIds={p.likedTrackIds}
+          lyricLrc={p.lyricLrc}
+          refreshing={Boolean(visibleStationMode && (visibleStationMode === 'aidj' ? c.isStreaming : refreshingModes[visibleStationMode]))}
+          onSelectMode={startStationMode}
+          onRefresh={() => visibleStationMode && refreshStationMode(visibleStationMode)}
+          onStop={leaveStationView}
+          onPrev={p.prevTrack}
+          onToggleMusic={p.toggleMusic}
+          onNext={p.nextTrack}
+          onSeek={p.seekTo}
+          onVolume={p.setVolume}
+          onPlayTrack={p.playTrack}
+          onToggleTrackLike={p.toggleTrackLike}
+        />
+        </div>
+      )}
+      <div className={`home-view-shell ${!stationViewMode ? 'is-active' : ''}`} aria-hidden={Boolean(stationViewMode)}>
+
       {/* 1. HEADER — CLAUDIO brand + avatar + status */}
       <div className="page-header">
         <ProfileCard open={profileOpen} onToggle={setProfileOpen} />
         <div className="header-right">
+          <button className="radio-entry" onClick={enterRadioSpace}>RADIO</button>
           <div className="theme-switch">
             <button className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>DARK</button>
             <button className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>LIGHT</button>
@@ -733,101 +936,25 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* 3. PLAYER */}
-      <div className="player-strip">
-        <div className="player-left">
-          <div className="eq-bars" style={{ opacity: p.musicPlaying ? 1 : 0.25 }}>
-            <div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" /><div className="eq-bar" />
-          </div>
-          <div className="player-meta">
-            <div className="player-title">
-              <span className="player-song">{song?.song_name || 'STANDBY'}</span>
-              {song?.artist && <span className="player-artist"> — {song.artist}</span>}
-            </div>
-            <div className={`player-sub ${p.musicPlaying ? 'live' : ''}`}>
-              {p.musicPlaying ? 'PLAYING' : p.djNarrating ? 'INTRO' : 'PAUSED'}
-            </div>
-          </div>
-        </div>
-        <div className="player-controls">
-          <button className="btn-c" onClick={p.prevTrack}>&#9664;&#9664;</button>
-          <button className={`btn-c ${p.musicPlaying ? 'active' : ''}`} onClick={p.toggleMusic}>
-            {p.musicPlaying ? '||' : '▶'}
-          </button>
-          <button className="btn-c" onClick={p.nextTrack}>&#9654;&#9654;</button>
-        </div>
-        <div className="player-right">
-          {song && (
-            <button
-              className={`heart-btn ${p.isLiked ? 'liked' : ''}`}
-              onClick={(e) => { e.stopPropagation(); song && p.toggleLike(song.song_id); }}
-              title={p.isLiked ? '取消红心' : '红心'}
-            >
-              {p.isLiked ? '♥' : '♡'}
-            </button>
-          )}
-          <span className="vol-label">VOL</span>
-          <div
-            className="vol-track"
-            onPointerDown={(e) => startTrackDrag(e, p.setVolume)}
-            role="slider"
-            aria-label="Volume"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(p.volume * 100)}
-          >
-            <div className="vol-fill" style={{ width: `${p.volume * 100}%` }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Progress bar */}
-      <div className="progress-bar">
-        <div
-          className="progress-line"
-          onPointerDown={(e) => startTrackDrag(e, p.seekTo)}
-          role="slider"
-          aria-label="Music progress"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(pct)}
-        >
-          <div className="progress-fill" style={{ width: `${pct}%` }} />
-        </div>
-        <div className="progress-times">
-          <span>{Math.floor(p.progressMs / 60000)}:{String(Math.floor(p.progressMs % 60000 / 1000)).padStart(2, '0')}</span>
-          <span>{Math.floor(p.durationMs / 60000)}:{String(Math.floor(p.durationMs % 60000 / 1000)).padStart(2, '0')}</span>
-        </div>
-      </div>
-
-      {/* 4. QUEUE BAR */}
-      <div className={`queue-bar ${queueOpen ? 'queue-bar--open' : ''}`}
-        onClick={() => setQueueOpen(o => !o)}>
-        <span>QUEUE</span>
-        <span>{p.playlist.length} TRACKS {queueOpen ? '▲' : '▼'}</span>
-      </div>
-      {queueOpen && (
-        <div className="queue-list">
-          {p.playlist.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: 36, fontFamily: 'var(--font-mono)', fontSize: 9, color: '#777', letterSpacing: '1.5px' }}>
-              SAY SOMETHING TO THE DJ
-            </div>
-          ) : (
-            p.playlist.map((s: Song, i: number) => (
-              <div key={`q-${s.song_id}-${i}`}
-                className={`queue-row ${i === p.currentIndex ? 'current' : ''}`}
-                onClick={(e) => { e.stopPropagation(); p.playTrack(i); }}>
-                <span className="queue-idx">{String(i + 1).padStart(2, '0')}</span>
-                <span className="queue-name">{s.song_name}</span>
-                <span className="queue-artist">{s.artist}</span>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* 5. CHAT — CLAUDIO bar + messages + input */}
+      {/* 3. CHAT - CLAUDIO bar + messages + input */}
       <div className="chat-section">
+        <GlobalPlayerBar
+          song={song}
+          playlist={p.playlist}
+          currentIndex={p.currentIndex}
+          sourceMode={p.activeStationMode || 'aidj'}
+          musicPlaying={p.musicPlaying}
+          djNarrating={p.djNarrating}
+          volume={p.volume}
+          likedTrackIds={p.likedTrackIds}
+          onPrev={p.prevTrack}
+          onToggleMusic={p.toggleMusic}
+          onNext={p.nextTrack}
+          onVolume={p.setVolume}
+          onPlayTrack={p.playTrack}
+          onToggleTrackLike={p.toggleTrackLike}
+          onOpenStation={enterRadioSpace}
+        />
         <div className="chat-bar" role="button" tabIndex={0}
           onClick={() => setSpeakingOpen(true)}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSpeakingOpen(true); }}>
@@ -891,10 +1018,11 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* 6. FOOTER */}
+      {/* 4. FOOTER */}
       <div className="page-footer">
         <span>CLAUDIO FM</span>
         <span>CONNECTED</span>
+      </div>
       </div>
 
       <SpeakingOverlay

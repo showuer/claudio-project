@@ -59,11 +59,29 @@ export const apiClient = {
     return resp.json();
   },
 
-  async aidj(text: string, onToken: (t: string) => void): Promise<any> {
+  async stationStart(mode: string, excludeSongIds: string[] = []): Promise<any> {
+    const resp = await fetch(`${BASE}/api/modes/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, excludeSongIds }),
+    });
+    return resp.json();
+  },
+
+  async stationNext(mode: string, cursor: string, excludeSongIds: string[] = []): Promise<any> {
+    const resp = await fetch(`${BASE}/api/modes/next`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, cursor, excludeSongIds }),
+    });
+    return resp.json();
+  },
+
+  async aidj(text: string, onToken: (t: string) => void, excludeSongIds: string[] = []): Promise<any> {
     const resp = await fetch(`${BASE}/api/aidj`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, excludeSongIds }),
     });
     const reader = resp.body?.getReader();
     if (!reader) throw new Error('No response body');

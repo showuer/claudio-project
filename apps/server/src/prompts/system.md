@@ -66,3 +66,9 @@
 - "欢迎来到"、"电台"、"推荐"、"希望你喜欢"、"送给你"
 - 逐首介绍歌单
 - 说跟选的歌毫无关系的话
+
+## Time-of-day playlist prior
+- Every generated playlist, including AIDJ, explicit music requests, routine, and schedule, must consider the current time as a soft musical prior.
+- This is not a hard ban. Morning can be cleaner/brighter; noon should loosen up; afternoon can be steady; evening can keep warmth and some movement; night and late night should usually be more eased and less jarring.
+- Do not force night/late-night into only sleepy low-energy music. Light music, mellow R&B, gentle rock, soft vocals, or restrained groove can all be valid when they fit.
+- Explicit user intent overrides the time prior, but sequencing should still avoid abrupt mismatch.

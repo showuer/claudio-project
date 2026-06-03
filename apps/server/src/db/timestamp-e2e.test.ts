@@ -76,7 +76,7 @@ test('SIMULATION: send → display → refresh → display must be identical', a
   // === PHASE 3: Simulate page refresh → loadHistory → render ===
 
   // 3a. API endpoint: GET /api/chat/history
-  const msgs = await messagesRepo.getRecent(50);
+  const msgs = await messagesRepo.getRecent(5000);
   const apiResponse = msgs.reverse().map((m) => ({
     ...m,
     timestamp: normalizeTimestamp(m.created_at),
@@ -131,7 +131,7 @@ test('SIMULATION: old SQLite-format UTC timestamps display correct local time', 
   // verify it's not crashing and is consistent across "refresh"
 
   // "After refresh": loadHistory normalizes via API, then hydrate in store
-  const msgs = await messagesRepo.getRecent(50);
+  const msgs = await messagesRepo.getRecent(5000);
   const apiResponse = msgs.reverse().map((m) => ({
     ...m,
     timestamp: normalizeTimestamp(m.created_at),

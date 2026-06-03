@@ -102,9 +102,100 @@ test('new playlist waits for current song to finish before opening narration sta
   assert.equal(FakeAudio.instances.some((a) => a.src === '/ignored-song-intro.mp3'), false);
 });
 
+test('queued aidj playlist does not re-add songs already in the current queue', async () => {
+  const mod = await import('../src/stores/playerStore.ts');
+  const ps = mod.usePlayerStore.getState();
+
+  ps.setPlaylist([
+    { song_id: 'old', song_name: 'Old Track', artist: 'Artist' },
+    { song_id: 'queued', song_name: 'Queued Track', artist: 'Artist' },
+  ]);
+  ps.playTrack(0);
+
+  ps.queuePlaylist(
+    [
+      { song_id: 'old', song_name: 'Old Track Again', artist: 'Artist' },
+      { song_id: 'queued', song_name: 'Queued Track Again', artist: 'Artist' },
+      { song_id: 'fresh', song_name: 'Fresh Track', artist: 'Artist' },
+    ],
+    '/fresh-opening.mp3',
+  );
+
+  assert.deepEqual(
+    mod.usePlayerStore.getState().playlist.map((song) => song.song_id),
+    ['old', 'fresh'],
+  );
+});
+
+test('normal aidj playlists clear station display state so home player and queue stay visible', async () => {
+  const mod = await import('../src/stores/playerStore.ts');
+  const ps = mod.usePlayerStore.getState();
+
+  ps.startStation('focus-cafe', [
+    { song_id: 'station', song_name: 'Station Track', artist: 'Cafe' },
+  ], 'cursor-1', 'ok');
+  assert.equal(mod.usePlayerStore.getState().activeStationMode, 'focus-cafe');
+
+  ps.setPlaylist([{ song_id: 'aidj', song_name: 'AIDJ Track', artist: 'Claudio' }]);
+  assert.equal(mod.usePlayerStore.getState().activeStationMode, '');
+
+  ps.startStation('focus-library', [
+    { song_id: 'library', song_name: 'Library Track', artist: 'Library' },
+  ], 'cursor-2', 'ok');
+  assert.equal(mod.usePlayerStore.getState().activeStationMode, 'focus-library');
+
+  ps.queuePlaylist([{ song_id: 'daily', song_name: 'Daily Track', artist: 'Claudio' }], '/daily-intro.mp3');
+  assert.equal(mod.usePlayerStore.getState().activeStationMode, '');
+});
+
 test('player store does not expose half-ready pending narration hooks', async () => {
   const mod = await import('../src/stores/playerStore.ts');
   const ps = mod.usePlayerStore.getState() as any;
 
   assert.equal(typeof ps.setPendingPlaylistNarration, 'undefined');
+});
+
+test('player store skips to the next track when a stream keeps failing', async () => {
+  (globalThis as any).setTimeout = (fn: () => void) => { fn(); return 0; };
+  (globalThis as any).clearTimeout = () => undefined;
+
+  const mod = await import('../src/stores/playerStore.ts');
+  const ps = mod.usePlayerStore.getState();
+
+  ps.setPlaylist([
+    { song_id: 'broken', song_name: 'Broken Track', artist: 'Artist' },
+    { song_id: 'next', song_name: 'Next Track', artist: 'Artist' },
+  ]);
+  ps.playTrack(0);
+  await Promise.resolve();
+
+  const music = FakeAudio.instances[0];
+  music.dispatchEvent(new Event('error'));
+  music.dispatchEvent(new Event('error'));
+  music.dispatchEvent(new Event('error'));
+  await Promise.resolve();
+
+  assert.equal(mod.usePlayerStore.getState().currentIndex, 1);
+  assert.equal(music.src, '/api/stream/next');
+});
+
+test('late lyrics from the previous aidj track cannot overwrite the current track', async () => {
+  const pending = new Map<string, (value: any) => void>();
+  (globalThis as any).fetch = (url: string) => new Promise((resolve) => pending.set(url, resolve));
+
+  const mod = await import('../src/stores/playerStore.ts');
+  const ps = mod.usePlayerStore.getState();
+  ps.setPlaylist([{ song_id: 'lyric-a', song_name: 'A', artist: 'Artist' }]);
+  const lyricA = ps.fetchLyric('lyric-a');
+
+  ps.setPlaylist([{ song_id: 'lyric-b', song_name: 'B', artist: 'Artist' }]);
+  const lyricB = ps.fetchLyric('lyric-b');
+
+  pending.get('/api/lyric/lyric-b')?.({ json: async () => ({ lrc: '[00:01]B lyric', klyric: '' }) });
+  await lyricB;
+  assert.equal(mod.usePlayerStore.getState().lyricLrc, '[00:01]B lyric');
+
+  pending.get('/api/lyric/lyric-a')?.({ json: async () => ({ lrc: '[00:01]A lyric', klyric: '' }) });
+  await lyricA;
+  assert.equal(mod.usePlayerStore.getState().lyricLrc, '[00:01]B lyric');
 });

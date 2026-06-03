@@ -14,6 +14,8 @@ import { registerPlaylistRoutes } from './routes/playlist.js';
 import { registerProfileRoutes } from './routes/profile.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerLyricRoutes } from './routes/lyric.js';
+import { registerModeRoutes } from './routes/modes.js';
+import { registerCoverRoutes } from './routes/cover.js';
 import { registerWebSocket, getClientCount } from './ws.js';
 import { startScheduler, stopScheduler, setBroadcast } from './services/scheduler.service.js';
 import { broadcast } from './ws.js';
@@ -59,6 +61,8 @@ registerPlaylistRoutes(app);
 registerProfileRoutes(app);
 registerSettingsRoutes(app);
 registerLyricRoutes(app);
+registerModeRoutes(app);
+registerCoverRoutes(app);
 
 setBroadcast(broadcast);
 startScheduler();

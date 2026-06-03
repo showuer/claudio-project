@@ -7,7 +7,7 @@ function getCookie(): string {
 }
 
 export interface SearchResult {
-  id: string; name: string; artist: string; album: string; duration: number;
+  id: string; name: string; artist: string; album: string; duration: number; coverUrl?: string;
 }
 
 export interface SongDetail {
@@ -32,6 +32,10 @@ async function fetchNcm(path: string, params?: Record<string, string>): Promise<
   }
 }
 
+function coverUrl(s: any): string {
+  return s.album?.picUrl || s.album?.blurPicUrl || s.al?.picUrl || s.al?.pic_str || s.picUrl || '';
+}
+
 export const ncmService = {
   async search(keyword: string, limit: number = 10): Promise<SearchResult[]> {
     const json = await fetchNcm('/search', { keywords: keyword, limit: String(limit), type: '1' });
@@ -42,6 +46,7 @@ export const ncmService = {
       artist: (s.artists || s.ar || []).map((a: any) => a.name).join(', '),
       album: s.album?.name || s.al?.name || '',
       duration: Math.floor((s.duration || s.dt || 0) / 1000),
+      coverUrl: coverUrl(s),
     }));
   },
 
@@ -86,6 +91,7 @@ export const ncmService = {
       artist: (s.artists || s.ar || []).map((a: any) => a.name).join(', '),
       album: s.album?.name || s.al?.name || '',
       duration: Math.floor((s.duration || s.dt || 0) / 1000),
+      coverUrl: coverUrl(s),
     }));
   },
 
@@ -110,6 +116,7 @@ export const ncmService = {
         artist: (s.artists || s.ar || []).map((a: any) => a.name).join(', '),
         album: s.album?.name || s.al?.name || '',
         duration: Math.floor((s.duration || s.dt || 0) / 1000),
+        coverUrl: coverUrl(s),
       }));
     }
     const songs = json?.songs || json?.body?.songs || [];
@@ -119,6 +126,7 @@ export const ncmService = {
       artist: (s.ar || []).map((a: any) => a.name).join(', '),
       album: s.al?.name || '',
       duration: Math.floor((s.dt || 0) / 1000),
+      coverUrl: coverUrl(s),
     }));
   },
 
@@ -132,6 +140,7 @@ export const ncmService = {
       artist: (s.ar || []).map((a: any) => a.name).join(', '),
       album: s.al?.name || '',
       duration: Math.floor((s.dt || 0) / 1000),
+      coverUrl: coverUrl(s),
     }));
   },
 };

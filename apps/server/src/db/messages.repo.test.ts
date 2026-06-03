@@ -68,7 +68,7 @@ test('getRecent returns messages ordered by created_at DESC', async () => {
     created_at: '2026-01-01T00:00:00.000Z',
   });
 
-  const recent = await messagesRepo.getRecent(50);
+  const recent = await messagesRepo.getRecent(5000);
   const ids = recent.map((m) => m.id);
 
   // The newer message should appear before the older one (DESC order)

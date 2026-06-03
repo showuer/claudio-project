@@ -53,3 +53,74 @@ test('song URL selection falls back through high-quality mp3 levels', async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test('song collections preserve cover artwork urls', async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/search') {
+      return new Response(JSON.stringify({
+        result: {
+          songs: [{
+            id: 11,
+            name: 'Search Song',
+            artists: [{ name: 'Artist A' }],
+            album: { name: 'Album A', picUrl: 'https://img.example/search.jpg' },
+            duration: 190000,
+          }],
+        },
+      }), { status: 200 });
+    }
+    if (url.pathname === '/personal_fm') {
+      return new Response(JSON.stringify({
+        data: [{
+          id: 12,
+          name: 'FM Song',
+          artists: [{ name: 'Artist B' }],
+          album: { name: 'Album B', picUrl: 'https://img.example/fm.jpg' },
+          duration: 200000,
+        }],
+      }), { status: 200 });
+    }
+    if (url.pathname === '/playlist/track/all') {
+      return new Response(JSON.stringify({
+        songs: [{
+          id: 13,
+          name: 'Playlist Song',
+          ar: [{ name: 'Artist C' }],
+          al: { name: 'Album C', picUrl: 'https://img.example/playlist.jpg' },
+          dt: 210000,
+        }],
+      }), { status: 200 });
+    }
+    if (url.pathname === '/recommend/songs') {
+      return new Response(JSON.stringify({
+        data: {
+          dailySongs: [{
+            id: 14,
+            name: 'Daily Song',
+            ar: [{ name: 'Artist D' }],
+            al: { name: 'Album D', picUrl: 'https://img.example/daily.jpg' },
+            dt: 220000,
+          }],
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const [searchSong] = await ncmService.search('cover', 1);
+    const [fmSong] = await ncmService.getPersonalFm();
+    const [playlistSong] = await ncmService.getPlaylistTracks('100', 1);
+    const [dailySong] = await ncmService.getDailyRecommend();
+
+    assert.equal(searchSong.coverUrl, 'https://img.example/search.jpg');
+    assert.equal(fmSong.coverUrl, 'https://img.example/fm.jpg');
+    assert.equal(playlistSong.coverUrl, 'https://img.example/playlist.jpg');
+    assert.equal(dailySong.coverUrl, 'https://img.example/daily.jpg');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

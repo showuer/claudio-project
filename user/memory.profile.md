@@ -66,7 +66,7 @@
 - 重型摇滚/金属
 
 ## Mood
-- 烦躁怀旧
+- 期待
 ## Routines
 # 我的作息
 
@@ -81,6 +81,40 @@
 - 由播放记录自动生成。
 
 ## Liked Song Signals
+- 2026-06-03 可惜我是水瓶座 - 杨千嬅 | weak song-level signal
+- 2026-06-03 바빠 (Bad Boy) - Sistar | weak song-level signal
+- 2026-06-03 グランドエスケープ (Movie edit) - 三浦透子, RADWIMPS | weak style signals: 日系摇滚/流行
+- 2026-06-03 半句再见 (From "At Café 6" / Main Theme Song) - 孙燕姿 | weak song-level signal
+- 2026-06-03 我愿意 - 齐秦 | weak song-level signal
+- 2026-06-02 ROUND-MIRROR MOON (feat. YOSHIKA) [Original Ver.] - JABBERLOOP | weak song-level signal
+- 2026-06-02 Warm in the Evening (Key Gb Ver.) - Dreamin' Tanpopo | weak song-level signal
+- 2026-06-02 ILoveUIHateU - Playboi Carti | weak song-level signal
+- 2026-06-02 听 - 方大同 | weak style signals: 华语 R&B / soul
+- 2026-06-02 Call Me Maybe - Scott Bradlee’s Postmodern Jukebox | weak song-level signal
+- 2026-06-02 孤獨患者(國) - 陈奕迅 | weak style signals: 华语 R&B / soul
+- 2026-06-01 卡农（经典钢琴版） - dylanf | weak song-level signal
+- 2026-06-01 Englishman In New York feat. yu-ri (BLU-SWING) - re:plus | weak song-level signal
+- 2026-06-01 用背脊唱情歌 (canon in d version) [Bonus Track] - Gareth.T | weak song-level signal
+- 2026-06-01 复刻回忆 - 薛凯琪, 方大同 | weak style signals: 华语 R&B / soul
+- 2026-05-29 前前前世 (movie ver.) - RADWIMPS | weak style signals: 日系摇滚/流行
+- 2026-05-29 稳稳的幸福 - 陈奕迅 | weak style signals: 华语 R&B / soul
+- 2026-05-29 爱是怀疑 - 陈奕迅 | weak style signals: 华语 R&B / soul
+- 2026-05-29 最佳损友 - 陈奕迅 | weak style signals: 华语 R&B / soul
+- 2026-05-29 因为爱情 - 陈奕迅, 王菲 | weak style signals: 华语 R&B / soul
+- 2026-05-29 稳稳的幸福（钢琴原声） - 派派 | weak song-level signal
+- 2026-05-27 爱，很简单 - 陶喆 | weak style signals: 华语 R&B / soul
+- 2026-05-27 アイロニ - majiko | weak song-level signal
+- 2026-05-27 Unbreakable - Michael Jackson, The Notorious B.I.G. | weak song-level signal
+- 2026-05-27 aruarian dance - Nujabes | weak style signals: 低能量 / chill
+- 2026-05-27 Simple And Clean - 宇多田ヒカル | weak style signals: 日系摇滚/流行
+- 2026-05-27 Groovin' King - taqumi | weak song-level signal
+- 2026-05-27 四季ノ唄 - MINMI旻觅 | weak song-level signal
+- 2026-05-27 Wasted - Juice WRLD, Lil Uzi Vert | weak song-level signal
+- 2026-05-27 The Night Time - Dan Foster | weak song-level signal
+- 2026-05-24 Up All Night - Instrumental - 西原健一郎 | weak song-level signal
+- 2026-05-23 Drifting In A Daydream - SoulChef, Need Not Worry | weak style signals: 华语 R&B / soul
+- 2026-05-23 Tea For Two - Jack Jezzro And Friends | weak song-level signal
+- 2026-05-23 The Way We Were - 山本刚 | weak song-level signal
 - 2026-05-23 Lover Girl - Laufey | weak song-level signal
 - 2026-05-23 Just the Two of Us - Grover Washington, Jr., Bill Withers | weak song-level signal
 - 2026-05-23 是但求其爱 - 陈奕迅 | weak style signals: 华语 R&B / soul
@@ -94,6 +128,7 @@
 - 暂无。
 
 ## Search And Recommendation Rules
+- Time-of-day is a soft playlist prior for every generated playlist, not only routine/schedule. Morning can be cleaner/brighter; noon should loosen up; afternoon can be steady; evening can keep warmth and some movement; night and late night should usually be more eased and less jarring, but not forcibly flattened into only low-energy sleep music. Explicit user requests override this prior.
 - 搜歌先提取歌手、歌名或场景核心词，再查找可播放歌曲。
 
 ## Profile Quote

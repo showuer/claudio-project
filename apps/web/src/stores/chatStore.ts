@@ -118,6 +118,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ps.queuePlaylist(
           songList.map((s: any) => ({
             song_id: s.id, song_name: s.name, artist: s.artist,
+            coverUrl: s.coverUrl,
             duration_ms: 240000,
           })),
           ttsUrl,
@@ -144,13 +145,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, userMsg, djMsg], isStreaming: true }));
 
     try {
+      const { usePlayerStore } = await import('./playerStore');
+      const excludeSongIds = usePlayerStore.getState().playlist.map((song) => song.song_id);
       const result = await apiClient.aidj(text, (token) => {
         set((s) => ({
           messages: s.messages.map((m) =>
             m.id === djMsg.id ? { ...m, content: m.content + token, status: 'streaming' } : m
           ),
         }));
-      });
+      }, excludeSongIds);
 
       if (result.error) throw new Error(result.error);
 
@@ -169,12 +172,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       if (result.songs?.length) {
-        const { usePlayerStore } = await import('./playerStore');
         const ps = usePlayerStore.getState();
         ps.init();
         ps.queuePlaylist(
           result.songs.map((s: any) => ({
             song_id: s.id, song_name: s.name, artist: s.artist,
+            coverUrl: s.coverUrl,
             duration_ms: 240000,
           })),
           ttsUrl,
